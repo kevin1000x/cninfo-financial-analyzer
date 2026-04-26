@@ -20,7 +20,7 @@
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/yourusername/cninfo-financial-analyzer
+git clone https://github.com/kevin1000x/cninfo-financial-analyzer
 cd cninfo-financial-analyzer
 
 # 2. 创建虚拟环境
@@ -46,7 +46,7 @@ python examples/full_analysis_example.py
 ### 1. 克隆并准备环境
 
 ```bash
-git clone https://github.com/yourusername/cninfo-financial-analyzer
+git clone https://github.com/kevin1000x/cninfo-financial-analyzer
 cd cninfo-financial-analyzer
 
 # 创建虚拟环境
@@ -533,7 +533,7 @@ rm -rf data/results/*
    * 错误信息与 Traceback
    * 可复现的步骤
 
-**支持**：[GitHub Issues](https://github.com/yourusername/cninfo-financial-analyzer/issues)
+**支持**：[GitHub Issues](https://github.com/kevin1000x/cninfo-financial-analyzer/issues)
 
 ---
 

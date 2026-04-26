@@ -17,7 +17,7 @@ setup(
     description='A comprehensive toolkit for analyzing Chinese financial reports from CNINFO',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/yourusername/cninfo-financial-analyzer',
+    url='https://github.com/kevin1000x/cninfo-financial-analyzer',
     packages=find_packages(),
     classifiers=[
         'Development Status :: 4 - Beta',
@@ -95,9 +95,9 @@ setup(
     },
     keywords='finance nlp chinese text-analysis sentiment-analysis financial-reports cninfo',
     project_urls={
-        'Bug Reports': 'https://github.com/yourusername/cninfo-financial-analyzer/issues',
-        'Source': 'https://github.com/yourusername/cninfo-financial-analyzer',
-        'Documentation': 'https://github.com/yourusername/cninfo-financial-analyzer/wiki',
+        'Bug Reports': 'https://github.com/kevin1000x/cninfo-financial-analyzer/issues',
+        'Source': 'https://github.com/kevin1000x/cninfo-financial-analyzer',
+        'Documentation': 'https://github.com/kevin1000x/cninfo-financial-analyzer/wiki',
     },
     license='MIT',
 )

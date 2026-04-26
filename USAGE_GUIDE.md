@@ -115,6 +115,9 @@ python -m src.pipeline analyze \
     --companies examples/company_list.csv \
     --years 2020-2022 \
     --restore-analysis-results data/results/intermediate/analysis_results_20240101_120000.pkl
+
+# Confirm work completion and clean transient cache while keeping audit artifacts
+python -m src.pipeline finish-work --confirm-work-complete
 ```
 
 ---
@@ -574,11 +577,12 @@ if time.localtime().tm_hour in range(2, 6):  # 凌晨 2-6 点
 3. **保存中间结果** — 包括 PDF、解析文本、分析结果
    `save_intermediate: true` 时会额外保存 `parse_results` / `analysis_results`
    可用 `--restore-parse-results [PICKLE]` 或 `--restore-analysis-results [PICKLE]` 从指定文件恢复；省略 `PICKLE` 时读取 latest
-4. **使用版本控制** — 跟踪配置和代码变更
-5. **抽样手工校验结果** — 对部分报告进行人工复核
-6. **尊重 CNINFO 服务器** — 使用合理的限速
-7. **保持日志记录** — 开启详细日志便于排查
-8. **先在小样本上测试** — 在处理海量数据前先验证流程
+4. **工作结束后清理缓存** — 使用 `finish-work --confirm-work-complete` 清理 PDF、临时中间结果和非审计解析缓存，保留 `streaming_audit` 留档
+5. **使用版本控制** — 跟踪配置和代码变更
+6. **抽样手工校验结果** — 对部分报告进行人工复核
+7. **尊重 CNINFO 服务器** — 使用合理的限速
+8. **保持日志记录** — 开启详细日志便于排查
+9. **先在小样本上测试** — 在处理海量数据前先验证流程
 
 ---
 

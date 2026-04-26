@@ -563,6 +563,76 @@ class FinancialAnalysisPipeline:
         self._enforce_streaming_audit_retention()
         return updated
 
+    def finish_work(self,
+                    confirm_work_complete: bool = False,
+                    dry_run: bool = False) -> Dict[str, List[str]]:
+        """
+        Clean transient work cache after the user confirms the current run is done.
+
+        Preserves final result exports and streaming audit artifacts. Removes
+        downloaded PDFs, temporary raw files, non-audit parsed outputs, and saved
+        intermediate pickle snapshots.
+        """
+        if not confirm_work_complete:
+            raise ValueError(
+                "finish_work requires confirm_work_complete=True before cache cleanup"
+            )
+
+        report: Dict[str, List[str]] = {
+            'removed_files': [],
+            'removed_dirs': [],
+            'kept_dirs': [],
+        }
+
+        def remove_path(path: Path) -> None:
+            if not path.exists():
+                return
+
+            if path.is_dir():
+                report['removed_dirs'].append(str(path))
+                if not dry_run:
+                    shutil.rmtree(path, ignore_errors=True)
+            else:
+                report['removed_files'].append(str(path))
+                if not dry_run:
+                    path.unlink(missing_ok=True)
+
+        def clean_directory_contents(root: Path,
+                                     keep_paths: Optional[List[Path]] = None,
+                                     keep_names: Optional[List[str]] = None) -> None:
+            if not root.exists():
+                return
+
+            keep_paths = [path.resolve() for path in (keep_paths or [])]
+            keep_names = keep_names or []
+
+            for child in root.iterdir():
+                if child.name in keep_names:
+                    continue
+
+                child_resolved = child.resolve()
+                if any(child_resolved == keep_path for keep_path in keep_paths):
+                    report['kept_dirs'].append(str(child))
+                    continue
+
+                remove_path(child)
+
+        raw_root = Path(self.downloader.download_path)
+        clean_directory_contents(raw_root, keep_names=['.gitkeep'])
+
+        parsed_root = Path(self.parser.output_path)
+        audit_root = Path(self.streaming_audit_output_path)
+        clean_directory_contents(
+            parsed_root,
+            keep_paths=[audit_root],
+            keep_names=['.gitkeep']
+        )
+
+        intermediate_root = Path(self.intermediate_output_path)
+        clean_directory_contents(intermediate_root, keep_names=['.gitkeep'])
+
+        return report
+
     def metrics_phase(self,
                       analysis_results: pd.DataFrame,
                       financial_data: pd.DataFrame) -> pd.DataFrame:
@@ -1144,6 +1214,22 @@ def main():
                                 default=None,
                                 help='Sentiment dictionary path')
 
+    # Finish-work command
+    finish_parser = subparsers.add_parser(
+        'finish-work',
+        help='Confirm work is complete and clean transient cache'
+    )
+    finish_parser.add_argument('--confirm-work-complete',
+                               action='store_true',
+                               help='Required confirmation before deleting cache files')
+    finish_parser.add_argument('--dry-run',
+                               action='store_true',
+                               help='Show what would be removed without deleting files')
+    finish_parser.add_argument('--config', default='config.yaml', help='Config file path')
+    finish_parser.add_argument('--sentiment-dict',
+                               default=None,
+                               help='Sentiment dictionary path')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1202,6 +1288,23 @@ def main():
                 restore_analysis_results=args.restore_analysis_results
             )
         logger.info(f"Analysis complete: {len(results)} observations")
+
+    elif args.command == 'finish-work':
+        if not args.confirm_work_complete:
+            parser.error(
+                "finish-work requires --confirm-work-complete to clean cache"
+            )
+
+        cleanup_report = pipeline.finish_work(
+            confirm_work_complete=True,
+            dry_run=args.dry_run
+        )
+        action = "Would remove" if args.dry_run else "Removed"
+        logger.info(
+            f"{action} {len(cleanup_report['removed_files'])} files and "
+            f"{len(cleanup_report['removed_dirs'])} directories; "
+            f"kept {len(cleanup_report['kept_dirs'])} audit directories"
+        )
 
 
 if __name__ == '__main__':

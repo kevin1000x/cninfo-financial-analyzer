@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  cninfo-analyzer:
+    build: .
+    image: cninfo-analyzer:latest
+    container_name: cninfo-analyzer
+    volumes:
+      # Mount data directories for persistence
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./examples:/app/examples
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Override command for interactive use
+    # command: /bin/bash
+    stdin_open: true
+    tty: true
+
+  # Optional: Database for storing results
+  postgres:
+    image: postgres:15-alpine
+    container_name: cninfo-db
+    environment:
+      POSTGRES_DB: findb
+      POSTGRES_USER: finuser
+      POSTGRES_PASSWORD: finpass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:

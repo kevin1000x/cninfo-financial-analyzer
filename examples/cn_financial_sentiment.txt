@@ -1,0 +1,198 @@
+# Chinese Financial Sentiment Dictionary
+# Based on Loughran & McDonald (2011) adapted for Chinese
+# Extended by Jiang Fuwei Team (2016)
+#
+# Format: POS: for positive words, NEG: for negative words
+# Source: Academic research on Chinese financial text sentiment analysis
+#
+# =============================================================================
+# POSITIVE WORDS (财务正面词汇)
+# =============================================================================
+
+POS:增长
+POS:增加
+POS:提升
+POS:提高
+POS:上升
+POS:改善
+POS:优化
+POS:盈利
+POS:收益
+POS:利润
+POS:获利
+POS:赚钱
+POS:成功
+POS:优秀
+POS:卓越
+POS:领先
+POS:突破
+POS:创新
+POS:发展
+POS:扩大
+POS:扩张
+POS:进步
+POS:前进
+POS:推进
+POS:加强
+POS:强化
+POS:巩固
+POS:稳固
+POS:稳定
+POS:良好
+POS:优良
+POS:健康
+POS:正常
+POS:顺利
+POS:完成
+POS:实现
+POS:达到
+POS:超过
+POS:突破
+POS:创造
+POS:取得
+POS:获得
+POS:赢得
+POS:机会
+POS:机遇
+POS:潜力
+POS:优势
+POS:竞争力
+POS:效率
+POS:效益
+POS:效果
+POS:回报
+POS:收入
+POS:营收
+POS:业绩
+POS:成果
+POS:成就
+POS:繁荣
+POS:兴旺
+POS:活跃
+POS:积极
+POS:正面
+POS:乐观
+POS:有利
+POS:顺畅
+POS:高质量
+POS:高效
+POS:快速
+POS:显著
+POS:大幅
+POS:明显
+POS:持续
+POS:不断
+POS:有效
+POS:合理
+POS:科学
+
+# =============================================================================
+# NEGATIVE WORDS (财务负面词汇)
+# =============================================================================
+
+NEG:下降
+NEG:降低
+NEG:减少
+NEG:下滑
+NEG:下跌
+NEG:衰退
+NEG:萎缩
+NEG:缩减
+NEG:恶化
+NEG:恶劣
+NEG:亏损
+NEG:损失
+NEG:失败
+NEG:困难
+NEG:问题
+NEG:风险
+NEG:危机
+NEG:危险
+NEG:威胁
+NEG:挑战
+NEG:压力
+NEG:负担
+NEG:债务
+NEG:负债
+NEG:欠款
+NEG:违约
+NEG:逾期
+NEG:不良
+NEG:坏账
+NEG:减值
+NEG:贬值
+NEG:滞销
+NEG:积压
+NEG:停滞
+NEG:停止
+NEG:中断
+NEG:终止
+NEG:取消
+NEG:暂停
+NEG:延迟
+NEG:推迟
+NEG:拖延
+NEG:困境
+NEG:低迷
+NEG:疲软
+NEG:乏力
+NEG:不足
+NEG:缺乏
+NEG:短缺
+NEG:紧张
+NEG:严峻
+NEG:严重
+NEG:重大
+NEG:不确定
+NEG:不稳定
+NEG:波动
+NEG:震荡
+NEG:动荡
+NEG:混乱
+NEG:争议
+NEG:纠纷
+NEG:诉讼
+NEG:处罚
+NEG:罚款
+NEG:警告
+NEG:调查
+NEG:质疑
+NEG:批评
+NEG:投诉
+NEG:索赔
+NEG:赔偿
+NEG:损害
+NEG:伤害
+NEG:破坏
+NEG:灾害
+NEG:事故
+NEG:失误
+NEG:错误
+NEG:过失
+NEG:疏忽
+NEG:不利
+NEG:负面
+NEG:悲观
+NEG:消极
+NEG:被动
+NEG:落后
+NEG:滞后
+NEG:差距
+NEG:低效
+NEG:无效
+
+# =============================================================================
+# USAGE NOTES
+# =============================================================================
+#
+# 1. This dictionary should be continuously updated based on domain expertise
+# 2. Consider context - some words may be neutral in different contexts
+# 3. For research use, document which version/date of dictionary was used
+# 4. Cite original sources:
+#    - Loughran, T., & McDonald, B. (2011). Journal of Finance, 66(1), 35-65.
+#    - Jiang Fuwei et al. (2016). Chinese financial sentiment dictionary
+#
+# 5. To add custom words, maintain the POS:/NEG: prefix format
+# 6. Lines starting with # are comments and will be ignored
+#
+# =============================================================================

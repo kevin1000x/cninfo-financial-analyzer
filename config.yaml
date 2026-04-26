@@ -1,0 +1,160 @@
+# CNINFO 金融分析器 配置
+
+# 下载器 设置
+downloader:
+  base_url: "http://www.cninfo.com.cn"
+  api_endpoint: "/new/hisAnnouncement/query"
+  download_path: "data/raw"
+  concurrent_downloads: 5
+  rate_limit: 2.0  # 请求之间的秒数
+  retry_attempts: 3
+  timeout: 30
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+  org_id_cache_path: "data/dictionaries/stock_org_map.json"
+
+  # 报告类型 映射
+  report_types:
+    annual: "年度报告"
+    semi_annual: "半年度报告"
+    quarterly: "季度报告"
+    prospectus: "招股说明书"
+
+  # 巨潮（CNINFO）上的类别标识
+  categories:
+    annual: "category_ndbg_szsh"
+    semi_annual: "category_bndbg_szsh"
+    quarterly: "category_jdbg_szsh"
+
+# PDF 解析器 设置
+parser:
+  pdf_engine: "pdfplumber"  # 可选：pdfplumber, pymupdf, both
+  output_path: "data/parsed"
+  max_saved_reports: 10     # 非流式路径仅保留最近 10 份解析文本/表格目录
+  use_ocr: false
+  ocr_language: "chi_sim"
+  extract_tables: true
+  table_parser: "pdfplumber"  # 可选：pdfplumber, tabula, camelot
+
+  # 用于识别章节的关键词
+  mda_keywords:
+    - "管理层讨论与分析"
+    - "经营情况讨论与分析"
+    - "Management Discussion"
+    - "业绩回顾"
+
+  financial_statement_keywords:
+    balance_sheet:
+      - "资产负债表"
+      - "合并资产负债表"
+      - "Balance Sheet"
+    income_statement:
+      - "利润表"
+      - "合并利润表"
+      - "Income Statement"
+    cash_flow:
+      - "现金流量表"
+      - "合并现金流量表"
+      - "Cash Flow"
+
+# 文本分析器 设置
+analyzer:
+  segmentation_tool: "jieba"  # 可选：jieba, hanlp
+  min_word_length: 2
+  remove_stopwords: true
+  stopwords_path: "data/dictionaries/stopwords.txt"
+
+  # 情感分析 相关设置
+  sentiment_dict_path: "data/dictionaries/cn_financial_sentiment.txt"
+  positive_prefix: "POS:"
+  negative_prefix: "NEG:"
+
+  # 可读性（Fog 指数）
+  complex_word_threshold: 2  # 中文字符数阈值
+  common_vocab_path: "data/dictionaries/common_vocab.txt"
+  fog_formula: "chinese_adapted"  # 公式：0.4 * (avg_sent_len + complex_word_pct)
+
+  # 替代指标
+  calculate_file_size: true
+  calculate_char_count: true
+
+# 分析阶段保护
+analysis:
+  min_text_chars: 500      # MD&A 太短时回退到全文分析
+  min_mda_ratio: 0.02      # MD&A 占全文比例过低时回退到全文
+
+# 指标计算
+metrics:
+  # 绩效类指标
+  performance_indicators:
+    - "roa"          # 资产回报率（Return on Assets）
+    - "ocf"          # 经营现金流（Operating Cash Flow）
+    - "roe"          # 股本回报率（Return on Equity）
+    - "profit_margin"  # 利润率
+
+  # 标准化方法
+  standardization: "zscore"  # 可选：zscore, minmax
+
+  # TNI 计算方法
+  tni_method: "standard"  # 公式：TNI = Tone_Z * (-1) * Perf_Z
+
+  # 缺失值处理策略
+  missing_data_strategy: "skip"  # 可选：skip, interpolate, forward_fill
+
+# 输出 设置
+output:
+  results_path: "data/results"
+  format: "excel"  # 可选：excel, csv, parquet, all
+  save_raw_text: true
+  save_structured_tables: true
+  save_intermediate: true
+  intermediate_path: "data/results/intermediate"
+  max_saved_intermediates: 5
+
+  # 主汇总表 列
+  summary_columns:
+    - "stock_code"
+    - "company_name"
+    - "year"
+    - "report_type"
+    - "file_path"
+    - "text_path"
+    - "analysis_text_source"
+    - "download_date"
+    - "pos_word_count"
+    - "neg_word_count"
+    - "total_words"
+    - "tone_raw"
+    - "tone_normalized"
+    - "fog_index"
+    - "file_size_bytes"
+    - "char_count"
+    - "avg_sentence_length"
+    - "complex_word_count"
+    - "complex_word_pct"
+    - "sentence_count"
+    - "roa"
+    - "roa_change"
+    - "ocf"
+    - "ocf_change"
+    - "perf_score"
+    - "tni"
+
+# 日志 设置
+logging:
+  level: "INFO"  # 可选：DEBUG, INFO, WARNING, ERROR
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+  log_file: "logs/analyzer.log"
+  rotation: "10 MB"
+
+# 测试 设置
+testing:
+  test_data_path: "tests/data"
+  sample_size: 3  # 用于测试的报告数量
+
+# 流式处理 设置
+streaming:
+  enabled: false            # 默认使用批量模式，CLI 可用 --streaming 覆盖
+  delete_pdf_after: true    # 分析完成后删除 PDF 文件
+  save_parsed_text: true    # 保留解析出的文本文件（体积小，留档复查）
+  audit_output_path: "data/parsed/streaming_audit"
+  max_audit_reports: 10     # 仅保留最近 10 份解析文本用于回查

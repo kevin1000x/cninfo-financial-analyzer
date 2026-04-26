@@ -1,7 +1,3 @@
-下面是整份 **CNINFO Financial Analyzer 使用指南** 的中文翻译（保留代码/命令不变，仅将注释和说明翻译为中文；代码内的注释也已翻译）。如需我把其中的某个示例改为可直接运行的脚本或把注释合并进代码注释里再优化一下，也可以告诉我 — 我立刻帮你改好，lcz。
-
----
-
 # CNINFO 金融分析器 — 使用指南
 
 本指南为使用 CNINFO Financial Analyzer 工具包提供详细示例。
@@ -465,7 +461,7 @@ for (code, year, type_), metas in metadata.items():
     
         # 如果语调非常消极则触发预警
         if analysis['tone_raw'] < -0.3:
-            print(f"⚠️ Alert: {code} shows negative tone ({analysis['tone_raw']:.2f})")
+            print(f"Alert: {code} shows negative tone ({analysis['tone_raw']:.2f})")
 ```
 
 ### 工作流 3：构建机器学习训练集
@@ -608,5 +604,3 @@ if time.localtime().tm_hour in range(2, 6):  # 凌晨 2-6 点
    * 代码片段
    * 日志输出
    * 系统信息（操作系统、Python 版本）
-
-祝你分析顺利！📊

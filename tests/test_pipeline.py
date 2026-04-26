@@ -4,6 +4,7 @@ Unit tests for pipeline output-quality safeguards.
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pandas as pd
@@ -496,6 +497,66 @@ def test_streaming_keep_pdf_preserves_file_path_and_pdf(pipeline_stub, tmp_path)
     assert Path(result['file_path']).exists()
 
 
+def test_finish_work_requires_explicit_confirmation(pipeline_stub, tmp_path):
+    raw_root = tmp_path / 'raw'
+    raw_root.mkdir()
+    pdf_path = raw_root / 'report.pdf'
+    pdf_path.write_bytes(b'%PDF-1.4')
+
+    pipeline_stub.downloader = SimpleNamespace(download_path=str(raw_root))
+    pipeline_stub.parser = SimpleNamespace(output_path=str(tmp_path / 'parsed'))
+
+    with pytest.raises(ValueError):
+        pipeline_stub.finish_work()
+
+    assert pdf_path.exists()
+
+
+def test_finish_work_cleans_cache_but_keeps_audit_and_results(pipeline_stub, tmp_path):
+    raw_root = tmp_path / 'raw'
+    parsed_root = tmp_path / 'parsed'
+    audit_root = parsed_root / 'streaming_audit'
+    results_root = tmp_path / 'results'
+    intermediate_root = results_root / 'intermediate'
+
+    raw_tmp = raw_root / '_streaming_tmp'
+    raw_tmp.mkdir(parents=True)
+    raw_pdf = raw_tmp / 'latest.pdf'
+    raw_pdf.write_bytes(b'%PDF-1.4')
+    (raw_root / '.gitkeep').touch()
+
+    non_audit = parsed_root / 'old_parse'
+    non_audit.mkdir(parents=True)
+    (non_audit / 'full_text.txt').write_text('old text', encoding='utf-8')
+    audit_dir = audit_root / '000001_2023_annual_report'
+    audit_dir.mkdir(parents=True)
+    audit_text = audit_dir / 'full_text.txt'
+    audit_text.write_text('audit text', encoding='utf-8')
+    (parsed_root / '.gitkeep').touch()
+
+    intermediate_root.mkdir(parents=True)
+    (intermediate_root / 'analysis_results_latest.pkl').write_bytes(b'cache')
+    results_root.mkdir(exist_ok=True)
+    result_file = results_root / 'master_summary.xlsx'
+    result_file.write_bytes(b'result')
+
+    pipeline_stub.downloader = SimpleNamespace(download_path=str(raw_root))
+    pipeline_stub.parser = SimpleNamespace(output_path=str(parsed_root))
+    pipeline_stub.streaming_audit_output_path = str(audit_root)
+    pipeline_stub.intermediate_output_path = str(intermediate_root)
+
+    report = pipeline_stub.finish_work(confirm_work_complete=True)
+
+    assert not raw_tmp.exists()
+    assert not non_audit.exists()
+    assert not (intermediate_root / 'analysis_results_latest.pkl').exists()
+    assert audit_text.exists()
+    assert result_file.exists()
+    assert raw_root.exists()
+    assert parsed_root.exists()
+    assert str(audit_root) in report['kept_dirs']
+
+
 def test_intermediate_frames_can_be_saved_and_loaded(pipeline_stub, monkeypatch):
     """Intermediate snapshots should be recoverable for later reruns."""
     pipeline_stub.save_intermediate = True
@@ -734,4 +795,44 @@ def test_analyze_cli_passes_intermediate_restore_args(monkeypatch, tmp_path):
         skip_analyze=False,
         restore_parse_results=str(tmp_path / 'parse_results.pkl'),
         restore_analysis_results='latest'
+    )
+
+
+def test_finish_work_cli_requires_confirmation(monkeypatch):
+    pipeline_instance = Mock()
+
+    pipeline_constructor = Mock(return_value=pipeline_instance)
+    monkeypatch.setattr('src.pipeline.FinancialAnalysisPipeline', pipeline_constructor)
+    monkeypatch.setattr('sys.argv', ['pipeline.py', 'finish-work'])
+
+    from src.pipeline import main
+
+    with pytest.raises(SystemExit):
+        main()
+
+    pipeline_instance.finish_work.assert_not_called()
+
+
+def test_finish_work_cli_passes_confirmation_and_dry_run(monkeypatch):
+    pipeline_instance = Mock()
+    pipeline_instance.finish_work.return_value = {
+        'removed_files': ['data/raw/report.pdf'],
+        'removed_dirs': [],
+        'kept_dirs': ['data/parsed/streaming_audit'],
+    }
+
+    pipeline_constructor = Mock(return_value=pipeline_instance)
+    monkeypatch.setattr('src.pipeline.FinancialAnalysisPipeline', pipeline_constructor)
+    monkeypatch.setattr(
+        'sys.argv',
+        ['pipeline.py', 'finish-work', '--confirm-work-complete', '--dry-run']
+    )
+
+    from src.pipeline import main
+
+    main()
+
+    pipeline_instance.finish_work.assert_called_once_with(
+        confirm_work_complete=True,
+        dry_run=True
     )

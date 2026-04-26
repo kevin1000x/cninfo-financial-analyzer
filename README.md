@@ -84,6 +84,9 @@ python -m src.pipeline analyze --companies examples/company_list.csv --years 202
 # 从指定 analysis_results pickle 恢复并直接输出/计算指标
 python -m src.pipeline analyze --companies examples/company_list.csv --years 2020-2022 --restore-analysis-results data/results/intermediate/analysis_results_20240101_120000.pkl
 
+# 确认当前工作结束并清理缓存，仅保留 streaming audit 留档
+python -m src.pipeline finish-work --confirm-work-complete
+
 # 解析已有的 PDFs
 python -m src.pipeline parse --input data/raw/ --output data/parsed/
 ```
@@ -133,6 +136,7 @@ output:
 * `--restore-parse-results [PICKLE]` 可从指定或 latest `parse_results` 恢复并重新分析
 * `--restore-analysis-results [PICKLE]` 可从指定或 latest `analysis_results` 恢复，跳过下载/解析/分析
 * `--skip-analyze` 保持兼容：按原流程完成解析后读取 latest `analysis_results`
+* `finish-work --confirm-work-complete` 会清理 PDF、临时中间结果和非审计解析缓存，保留 `streaming_audit` 与最终结果文件
 
 手动解析后自行分析时，也应复用正式流水线的文本选择逻辑：
 

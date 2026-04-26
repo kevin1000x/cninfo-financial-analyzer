@@ -117,3 +117,4 @@ _archived/
 # Local example scratch data
 # ===========================
 examples/data/
+examples/test_*.csv

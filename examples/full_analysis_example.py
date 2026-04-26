@@ -253,7 +253,7 @@ def main():
             stata_path = f'data/results/results_for_stata_{create_timestamp()}.dta'
             results.to_stata(stata_path, write_index=False)
             print(f"  ✓ Stata format: {stata_path}")
-        except:
+        except Exception:
             print("  ℹ Install pandas with stata support: pip install pandas[stata]")
 
         print()

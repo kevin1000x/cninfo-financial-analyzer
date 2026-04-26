@@ -26,7 +26,7 @@
 
 ```bash
 # 克隆仓库
-git clone <repository-url>
+git clone https://github.com/kevin1000x/cninfo-financial-analyzer
 cd cninfo-financial-analyzer
 
 # 创建虚拟环境（推荐）
@@ -408,7 +408,7 @@ pytest --cov=src tests/
   title={CNINFO Financial Text Analyzer},
   author={{CNINFO Financial Analyzer Maintainers}},
   year={2024},
-  url={https://github.com/yourusername/cninfo-financial-analyzer}
+  url={https://github.com/kevin1000x/cninfo-financial-analyzer}
 }
 ```
 

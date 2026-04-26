@@ -23,7 +23,7 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/cninfo-financial-analyzer
+git clone https://github.com/kevin1000x/cninfo-financial-analyzer
 cd cninfo-financial-analyzer
 
 # Create virtual environment

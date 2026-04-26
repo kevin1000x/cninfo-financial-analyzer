@@ -121,10 +121,10 @@ docker run -it -v $(pwd)/data:/app/data \
 
 ### Docker 优势
 
-* ✅ 无需在本机配置 Python 环境
-* ✅ 跨系统环境一致
-* ✅ 易于部署到云端
-* ✅ 包含系统依赖（如 Tesseract 等）
+* 无需在本机配置 Python 环境
+* 跨系统环境一致
+* 易于部署到云端
+* 包含系统依赖（如 Tesseract 等）
 
 ---
 
@@ -511,11 +511,11 @@ rm -rf data/results/*
 
 完成安装后建议执行：
 
-1. ✅ 阅读 `README.md` 获取项目概览
-2. ✅ 阅读 `USAGE_GUIDE.md` 获取详细示例
-3. ✅ 检查并调整 `config.yaml` 配置
-4. ✅ 运行 `examples/full_analysis_example.py`
-5. ✅ 开始你的分析工作！
+1. 阅读 `README.md` 获取项目概览
+2. 阅读 `USAGE_GUIDE.md` 获取详细示例
+3. 检查并调整 `config.yaml` 配置
+4. 运行 `examples/full_analysis_example.py`
+5. 开始分析工作
 
 ---
 
@@ -539,5 +539,3 @@ rm -rf data/results/*
 
 **最后更新**：2024
 **安装测试平台**：Ubuntu 22.04、macOS 13、Windows 11
-
-如果你希望我把这份中文安装指南生成成 README.md、PDF，或把关键安装步骤写成一键脚本（比如自动安装依赖并初始化目录），我可以直接为你写好并输出。想要哪个就说一声，lcz。

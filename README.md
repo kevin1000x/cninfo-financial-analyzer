@@ -245,7 +245,7 @@ TNI = Standardized_Tone × (-1) × Standardized_Performance
 
 ## 法律与合规
 
-⚠️ **重要免责声明**：
+**重要免责声明**：
 
 1. **CNINFO 服务条款**：请始终检查并遵守 [http://www.cninfo.com.cn/new/robots.txt](http://www.cninfo.com.cn/new/robots.txt)
 2. **限速**：默认配置尊重服务器负载（请求间隔 2 秒）
@@ -422,7 +422,7 @@ pytest --cov=src tests/
 
 * 问题反馈：GitHub Issues
 * 邮件：请优先通过 GitHub Issues 联系维护者
-* 文档： [详细文档链接]
+* 文档：README.md、USAGE_GUIDE.md、INSTALLATION.md
 
 ---
 

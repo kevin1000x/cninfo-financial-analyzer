@@ -1,6 +1,18 @@
 """
-Background runner that wraps FinancialAnalysisPipeline.run_streaming
-and pumps loguru log records into a per-job asyncio.Queue.
+Background runner that wraps FinancialAnalysisPipeline.run_streaming.
+
+Design notes:
+- One job at a time. POST /jobs while a job is active raises
+  JobAlreadyRunning, which the API translates to HTTP 429. Loguru sinks
+  attach to the global root logger, so concurrent jobs would interleave
+  each other's logs and corrupt every consumer.
+- Per-job event history (capped) + per-connection subscriber queues so
+  SSE consumers can disconnect/reconnect (browser refresh, mobile
+  switch) and still see what happened.
+- result_path comes from pipeline.last_output_file (set inside
+  FinancialAnalysisPipeline.save_results), not by scanning data/results
+  for the newest xlsx — that scan would mis-bind A's xlsx to job B if
+  jobs ran back-to-back.
 """
 
 from __future__ import annotations
@@ -8,13 +20,17 @@ from __future__ import annotations
 import asyncio
 import threading
 import traceback
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 from uuid import uuid4
 
 from loguru import logger
+
+
+HISTORY_CAP = 1000
 
 
 @dataclass
@@ -32,28 +48,58 @@ class JobState:
     id: str
     spec: JobSpec
     status: str = "pending"  # pending | running | done | error
-    queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    history: Deque[Dict[str, Any]] = field(default_factory=lambda: deque(maxlen=HISTORY_CAP))
+    subscribers: List[asyncio.Queue] = field(default_factory=list)
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
     result_path: Optional[str] = None
     error: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
 
 
+class JobAlreadyRunning(RuntimeError):
+    """Raised by JobRegistry.reserve when another job is still active."""
+
+    def __init__(self, running_id: str) -> None:
+        super().__init__(f"another job is already running: {running_id}")
+        self.running_id = running_id
+
+
 class JobRegistry:
-    """In-memory job registry. Loses state on process restart — good enough for a research demo."""
+    """In-memory single-job registry. Process-local; restart loses state."""
 
     def __init__(self) -> None:
         self._jobs: Dict[str, JobState] = {}
+        self._running_id: Optional[str] = None
         self._lock = threading.Lock()
 
-    def create(self, spec: JobSpec) -> JobState:
-        job = JobState(id=uuid4().hex, spec=spec)
+    def reserve(self, spec: JobSpec) -> JobState:
         with self._lock:
+            if self._running_id is not None:
+                running = self._jobs.get(self._running_id)
+                if running and running.status in {"pending", "running"}:
+                    raise JobAlreadyRunning(self._running_id)
+            job = JobState(id=uuid4().hex, spec=spec)
             self._jobs[job.id] = job
-        return job
+            self._running_id = job.id
+            return job
+
+    def release(self, job_id: str) -> None:
+        with self._lock:
+            if self._running_id == job_id:
+                self._running_id = None
 
     def get(self, job_id: str) -> Optional[JobState]:
         return self._jobs.get(job_id)
+
+    def running_id(self) -> Optional[str]:
+        with self._lock:
+            return self._running_id
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            self._jobs.clear()
+            self._running_id = None
 
 
 registry = JobRegistry()
@@ -63,15 +109,45 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _enqueue(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, payload: Dict[str, Any]) -> None:
-    """Thread-safe queue push from the worker thread back to the asyncio loop."""
-    asyncio.run_coroutine_threadsafe(queue.put(payload), loop)
+async def _publish(job: JobState, payload: Dict[str, Any]) -> None:
+    """Append to history and fan out to subscribers. Runs on the loop thread,
+    so history append + subscribers iteration is atomic w.r.t. subscribe()."""
+    job.history.append(payload)
+    for q in list(job.subscribers):
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            try:
+                _ = q.get_nowait()
+                q.put_nowait(payload)
+            except (asyncio.QueueEmpty, asyncio.QueueFull):
+                pass
+    if payload.get("type") == "eof":
+        job.finished.set()
 
 
-def _make_loguru_sink(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
+def _enqueue(loop: asyncio.AbstractEventLoop, job: JobState, payload: Dict[str, Any]) -> None:
+    """Thread-safe trigger of _publish from the worker thread.
+    Silently drops events if the target loop is gone — happens during
+    test teardown and on graceful shutdown."""
+    if loop.is_closed():
+        job.history.append(payload)
+        if payload.get("type") == "eof":
+            try:
+                job.finished.set()
+            except RuntimeError:
+                pass
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(_publish(job, payload), loop)
+    except RuntimeError:
+        pass
+
+
+def _make_loguru_sink(loop: asyncio.AbstractEventLoop, job: JobState):
     def sink(message) -> None:
         record = message.record
-        _enqueue(loop, queue, {
+        _enqueue(loop, job, {
             "type": "log",
             "level": record["level"].name,
             "message": record["message"],
@@ -82,7 +158,6 @@ def _make_loguru_sink(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
 
 
 def _write_companies_csv(codes: List[str]) -> str:
-    """Materialize a one-shot company_list CSV under data/_web_jobs/."""
     base = Path("data/_web_jobs")
     base.mkdir(parents=True, exist_ok=True)
     path = base / f"companies_{uuid4().hex[:8]}.csv"
@@ -94,24 +169,22 @@ def _write_companies_csv(codes: List[str]) -> str:
 
 
 def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
-    """Worker entry point. Runs in its own thread."""
     sink_id = None
     job.status = "running"
     job.started_at = _now_iso()
-    _enqueue(loop, job.queue, {"type": "status", "status": "running"})
+    _enqueue(loop, job, {"type": "status", "status": "running"})
 
     try:
         from src.pipeline import FinancialAnalysisPipeline
 
         sink_id = logger.add(
-            _make_loguru_sink(loop, job.queue),
+            _make_loguru_sink(loop, job),
             level="INFO",
             format="{message}",
             enqueue=False,
         )
 
         pipeline = FinancialAnalysisPipeline()
-
         companies_csv = _write_companies_csv(job.spec.company_codes)
 
         results = pipeline.run_streaming(
@@ -123,21 +196,20 @@ def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
             save_parsed_text=job.spec.save_parsed_text,
         )
 
-        result_path = _latest_master_summary()
-        job.result_path = result_path
+        job.result_path = pipeline.last_output_file
         job.status = "done"
         job.finished_at = _now_iso()
-        _enqueue(loop, job.queue, {
+        _enqueue(loop, job, {
             "type": "done",
             "rows": int(len(results)) if hasattr(results, "__len__") else 0,
-            "result_path": result_path,
+            "result_path": job.result_path,
         })
 
     except Exception as exc:
         job.status = "error"
         job.error = f"{type(exc).__name__}: {exc}"
         job.finished_at = _now_iso()
-        _enqueue(loop, job.queue, {
+        _enqueue(loop, job, {
             "type": "error",
             "error": job.error,
             "trace": traceback.format_exc(),
@@ -149,30 +221,40 @@ def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
                 logger.remove(sink_id)
             except ValueError:
                 pass
-        _enqueue(loop, job.queue, {"type": "eof"})
-
-
-def _latest_master_summary() -> Optional[str]:
-    results_dir = Path("data/results")
-    if not results_dir.exists():
-        return None
-    candidates = sorted(
-        results_dir.glob("master_summary_*.xlsx"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return str(candidates[0]) if candidates else None
+        _enqueue(loop, job, {"type": "eof"})
+        registry.release(job.id)
 
 
 def start_job(spec: JobSpec) -> JobState:
-    """Register a job and kick off its worker thread."""
-    job = registry.create(spec)
+    """Reserve the single job slot, then kick off the worker thread.
+
+    Raises JobAlreadyRunning if another job is currently active."""
+    job = registry.reserve(spec)
     loop = asyncio.get_running_loop()
+    # Resolve run_job via module globals so tests can monkeypatch it
+    # (closure-captured references would defeat that).
+    import api.runner as _self
     thread = threading.Thread(
-        target=run_job,
+        target=_self.run_job,
         args=(job, loop),
         name=f"job-{job.id[:8]}",
         daemon=True,
     )
     thread.start()
     return job
+
+
+def subscribe(job: JobState) -> asyncio.Queue:
+    """Register a subscriber queue. Must be called on the asyncio loop
+    thread (FastAPI handlers always are). Synchronous on purpose so the
+    caller can snapshot history + register without an intervening await."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=HISTORY_CAP)
+    job.subscribers.append(q)
+    return q
+
+
+def unsubscribe(job: JobState, q: asyncio.Queue) -> None:
+    try:
+        job.subscribers.remove(q)
+    except ValueError:
+        pass

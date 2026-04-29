@@ -130,6 +130,7 @@ class FinancialAnalysisPipeline:
         self.analyzer = TextAnalyzer(self.config, sentiment_dict_path)
         self.metrics_calculator = MetricsCalculator(self.config)
         self.company_map: Dict[str, str] = {}
+        self.last_output_file: Optional[str] = None
         analysis_config = self.config.get('analysis', {})
         stream_config = self.config.get('streaming', {})
         output_config = self.config.get('output', {})
@@ -833,7 +834,9 @@ class FinancialAnalysisPipeline:
 
         logger.info(f"Results saved to {len(output_files)} file(s)")
 
-        return output_files[0] if output_files else None
+        final_path = output_files[0] if output_files else None
+        self.last_output_file = final_path
+        return final_path
 
     def run(self,
             company_codes: List[str] = None,

@@ -27,9 +27,15 @@ from api import runner as api_runner
 class FakePipeline:
     """Stand-in for FinancialAnalysisPipeline that emits a couple of log
     lines and writes a small xlsx to data/results, then sets
-    last_output_file on itself."""
+    last_output_file on itself.
+
+    Class-level `last_init_kwargs` lets tests assert what was passed to
+    the constructor (e.g. cookies)."""
+
+    last_init_kwargs: dict = {}
 
     def __init__(self, *args, **kwargs) -> None:
+        FakePipeline.last_init_kwargs = kwargs
         self.last_output_file: str | None = None
 
     def run_streaming(self, **_kwargs) -> pd.DataFrame:
@@ -105,6 +111,9 @@ def client(monkeypatch, tmp_path):
 
     monkeypatch.setattr("src.pipeline.FinancialAnalysisPipeline", FakePipeline)
     monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.delenv("CNINFO_COOKIES_FILE", raising=False)
+    monkeypatch.delenv("CNINFO_COOKIES_JSON", raising=False)
+    FakePipeline.last_init_kwargs = {}
     api_runner.registry.reset_for_tests()
 
     with TestClient(api_main.app) as c:
@@ -170,6 +179,10 @@ def test_healthz_never_requires_token(client, monkeypatch):
         (
             {"company_codes": ["600519"], "years": [2022], "report_types": ["weekly"]},
             "bad report_type",
+        ),
+        (
+            {"company_codes": ["600519"], "years": [2022], "report_types": ["prospectus"]},
+            "prospectus removed from whitelist (config.yaml has no category, downloader has no keywords)",
         ),
         (
             {"company_codes": [f"{i:06d}" for i in range(20)], "years": list(range(2010, 2020)), "report_types": ["annual"]},
@@ -261,6 +274,66 @@ def test_completed_job_stream_replays_and_terminates(client):
     types = [t for t, _ in events]
     assert "log" in types, f"expected log replay, got {types}"
     assert types[-1] == "eof", f"stream must end with eof, got {types}"
+
+
+def test_cookies_file_takes_precedence(client, monkeypatch, tmp_path):
+    cookie_file = tmp_path / "cookies.json"
+    cookie_file.write_text('{"FROM_FILE": "abc"}', encoding="utf-8")
+    monkeypatch.setenv("CNINFO_COOKIES_FILE", str(cookie_file))
+    monkeypatch.setenv("CNINFO_COOKIES_JSON", '{"FROM_ENV": "xyz"}')
+
+    r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    assert FakePipeline.last_init_kwargs.get("cookies") == {"FROM_FILE": "abc"}
+
+
+def test_cookies_json_fallback(client, monkeypatch):
+    monkeypatch.setenv("CNINFO_COOKIES_JSON", '{"JSESSIONID": "from-env-only"}')
+
+    r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    assert FakePipeline.last_init_kwargs.get("cookies") == {"JSESSIONID": "from-env-only"}
+
+
+def test_cookies_unset_passes_none(client):
+    r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    # Pipeline should be constructed with cookies=None when neither env is set.
+    assert FakePipeline.last_init_kwargs.get("cookies") is None
+
+
+def test_cookies_invalid_json_surfaces_as_job_error(client, monkeypatch):
+    monkeypatch.setenv("CNINFO_COOKIES_JSON", "not-json{")
+
+    r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    snap = _wait_for_status(client, job_id, "error")
+    assert snap["error"] is not None
+    assert "CNINFO_COOKIES_JSON" in snap["error"]
+
+
+def test_heartbeat_does_not_pollute_history(client):
+    r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    job = api_runner.registry.get(job_id)
+    types = [event.get("type") for event in job.history]
+    assert "ping" not in types, f"history must not contain ping events: {types}"
+    assert set(types) <= {"status", "log", "done", "error", "eof"}, (
+        f"unexpected event types in history: {types}"
+    )
 
 
 def test_result_path_bound_to_job_not_latest_scan(client, monkeypatch):

@@ -18,6 +18,8 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import threading
 import traceback
 from collections import deque
@@ -157,6 +159,47 @@ def _make_loguru_sink(loop: asyncio.AbstractEventLoop, job: JobState):
     return sink
 
 
+def _load_cninfo_cookies() -> Optional[Dict[str, str]]:
+    """Read CNINFO cookies from environment.
+
+    Precedence: CNINFO_COOKIES_FILE (path to JSON) > CNINFO_COOKIES_JSON
+    (JSON string). Both unset → returns None and the pipeline runs with
+    no auth cookies. Failures raise ValueError with a clear message; the
+    worker thread converts that into a job-error event.
+
+    Cookie *values* must never be logged, returned, or echoed back to
+    the client. Only the source path and key count may be mentioned.
+    """
+    file_path = os.environ.get("CNINFO_COOKIES_FILE", "").strip()
+    if file_path:
+        path = Path(file_path)
+        if not path.exists():
+            raise ValueError(f"CNINFO_COOKIES_FILE not found: {file_path}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"CNINFO_COOKIES_FILE is not valid JSON: {exc.msg}") from None
+        if not isinstance(data, dict):
+            raise ValueError("CNINFO_COOKIES_FILE must contain a JSON object of name→value")
+        cookies = {str(k): str(v) for k, v in data.items()}
+        logger.info(f"Loaded {len(cookies)} CNINFO cookies from file")
+        return cookies
+
+    json_blob = os.environ.get("CNINFO_COOKIES_JSON", "").strip()
+    if json_blob:
+        try:
+            data = json.loads(json_blob)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"CNINFO_COOKIES_JSON is not valid JSON: {exc.msg}") from None
+        if not isinstance(data, dict):
+            raise ValueError("CNINFO_COOKIES_JSON must decode to a JSON object")
+        cookies = {str(k): str(v) for k, v in data.items()}
+        logger.info(f"Loaded {len(cookies)} CNINFO cookies from env")
+        return cookies
+
+    return None
+
+
 def _write_companies_csv(codes: List[str]) -> str:
     base = Path("data/_web_jobs")
     base.mkdir(parents=True, exist_ok=True)
@@ -184,7 +227,8 @@ def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
             enqueue=False,
         )
 
-        pipeline = FinancialAnalysisPipeline()
+        cookies = _load_cninfo_cookies()
+        pipeline = FinancialAnalysisPipeline(cookies=cookies)
         companies_csv = _write_companies_csv(job.spec.company_codes)
 
         results = pipeline.run_streaming(

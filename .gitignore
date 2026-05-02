@@ -77,6 +77,7 @@ data/raw/**/*.pdf
 data/dictionaries/*
 data/parsed/**/*
 data/results/**/*
+data/_web_jobs/
 logs/**/*
 
 # Keep directory structure

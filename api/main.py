@@ -43,7 +43,7 @@ from .runner import (
 )
 
 
-ALLOWED_REPORT_TYPES = {"annual", "semi_annual", "quarterly", "prospectus"}
+ALLOWED_REPORT_TYPES = {"annual", "semi_annual", "quarterly"}
 STOCK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MIN_YEAR = 1990
 MAX_TASKS = 100
@@ -54,7 +54,7 @@ app = FastAPI(title="cninfo-analyzer web API", version="0.2.0")
 
 allowed_origins = os.environ.get(
     "API_ALLOWED_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173",
 ).split(",")
 
 app.add_middleware(
@@ -262,7 +262,11 @@ async def stream_job(job_id: str, _: None = Depends(require_token)):
             if queue is not None:
                 unsubscribe(job, queue)
 
-    return EventSourceResponse(event_source())
+    # ping=15 emits SSE comments at the wire level (not via our generator),
+    # so heartbeat traffic never enters job.history and never replays on
+    # reconnect. Required to keep Cloudflare Tunnel and other intermediate
+    # proxies from closing idle SSE connections.
+    return EventSourceResponse(event_source(), ping=15)
 
 
 @app.get("/jobs/{job_id}/result")

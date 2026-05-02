@@ -35,13 +35,20 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 2
 fi
 
-auth_header=()
-if [[ -n "$TOKEN" ]]; then
-  auth_header=(-H "Authorization: Bearer $TOKEN")
-fi
+# api_curl wraps curl and conditionally injects the bearer token.
+# Wrapping avoids the bash 3.2 + `set -u` + empty-array-expansion trap:
+#   "${arr[@]:-}" expands to one empty argument when arr is empty,
+#   which curl rejects as "blank argument".
+api_curl() {
+  if [[ -n "$TOKEN" ]]; then
+    curl "$@" -H "Authorization: Bearer $TOKEN"
+  else
+    curl "$@"
+  fi
+}
 
 echo "==> healthz"
-curl -fsS "$HOST/healthz" "${auth_header[@]:-}" | jq -c .
+api_curl -fsS "$HOST/healthz" | jq -c .
 
 echo "==> POST /jobs"
 if [[ -n "$FIN" ]]; then
@@ -53,9 +60,8 @@ else
 fi
 echo "    payload: $payload"
 
-resp=$(curl -fsS -X POST "$HOST/jobs" \
+resp=$(api_curl -fsS -X POST "$HOST/jobs" \
   -H "Content-Type: application/json" \
-  "${auth_header[@]:-}" \
   -d "$payload")
 job_id=$(echo "$resp" | jq -r '.job_id')
 echo "    job_id=$job_id"
@@ -64,19 +70,19 @@ echo "==> GET /jobs/$job_id/stream  (Ctrl-C to detach; job keeps running)"
 # `-N` disables curl buffering so SSE chunks arrive as they're sent.
 # Comments (lines starting with `:`) are sse-starlette ping=15 heartbeats
 # and should be ignored.
-curl -N -fsS "$HOST/jobs/$job_id/stream" "${auth_header[@]:-}" \
+api_curl -N -fsS "$HOST/jobs/$job_id/stream" \
   | grep --line-buffered -vE '^:|^$' \
   || true
 
 echo "==> GET /jobs/$job_id (final snapshot)"
-final=$(curl -fsS "$HOST/jobs/$job_id" "${auth_header[@]:-}")
+final=$(api_curl -fsS "$HOST/jobs/$job_id")
 echo "$final" | jq .
 status=$(echo "$final" | jq -r '.status')
 
 if [[ "$status" == "done" ]]; then
   out="data/results/smoke_${STOCK}_${YEAR}_${job_id:0:8}.xlsx"
   echo "==> GET /jobs/$job_id/result -> $out"
-  curl -fsS "$HOST/jobs/$job_id/result" "${auth_header[@]:-}" -o "$out"
+  api_curl -fsS "$HOST/jobs/$job_id/result" -o "$out"
   echo "    saved $(ls -lh "$out" | awk '{print $5,$9}')"
 elif [[ "$status" == "error" ]]; then
   echo "    job ended in error: $(echo "$final" | jq -r '.error')" >&2

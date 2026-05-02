@@ -88,7 +88,6 @@ export const onRequest = async (ctx: PagesContext): Promise<Response> => {
   if (isStream) {
     respHeaders.set("Content-Type", "text/event-stream; charset=utf-8");
     respHeaders.set("Cache-Control", "no-cache");
-    respHeaders.set("Connection", "keep-alive");
     respHeaders.set("X-Accel-Buffering", "no"); // disable nginx-style buffering if any
   } else {
     const ct = upstream.headers.get("content-type");

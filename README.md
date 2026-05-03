@@ -22,6 +22,21 @@
 * **TNI 计算**：语调与绩效指标的标准化结合
 * **全面测试**：使用 pytest 的单元测试
 
+## 情感词典 / Sentiment Dictionary
+
+Tone（语调）指标依赖中文金融情感词典——本项目默认使用：
+
+- **来源**：[姜富伟、孟令超、唐国豪 (2020) 中文金融情感词典](https://github.com/MengLingchao/Chinese_financial_sentiment_dictionary/)
+- **源文件**：`data/dictionaries/source/中文金融情感词典_姜富伟等(2020).xlsx`（上游 xlsx 字节级原样保留，不要手改）
+- **运行时文件**：`data/dictionaries/cn_financial_sentiment.txt`（POS:/NEG: 文本格式，由脚本从 xlsx 转换生成）
+- **重新生成**：`python scripts/build_sentiment_dictionary.py`
+- **词条规模**：raw 9228 行（positive 3338 + negative 5890）；去重后 8815（positive 3194 + negative 5621）
+
+⚠️ Tone 指标的可比性依赖这份词典；缺失或替换会导致 tone 数值不可比。重分发请按 [`data/dictionaries/NOTICE.md`](data/dictionaries/NOTICE.md) 引用如下两篇文献：
+
+1. Fuwei Jiang, Joshua Lee, Xiumin Martin, and Guofu Zhou. "Manager Sentiment and Stock Returns." *Journal of Financial Economics* 132(1), 2019, 126-149.
+2. 姜富伟、孟令超、唐国豪. "媒体文本情绪与股票回报预测."《经济学(季刊)》, 2021 年第 4 期, 1323-1344.
+
 ## 安装
 
 ```bash

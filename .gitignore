@@ -87,6 +87,14 @@ logs/**/*
 !data/results/.gitkeep
 !logs/.gitkeep
 
+# Keep the bundled Jiang et al. 2020 sentiment dictionary
+# (see data/dictionaries/NOTICE.md for citation)
+!data/dictionaries/cn_financial_sentiment.txt
+!data/dictionaries/NOTICE.md
+!data/dictionaries/source/
+!data/dictionaries/source/*.xlsx
+# stock_org_map.json stays gitignored — it's a runtime download cache
+
 # ===========================
 # Sensitive / Local config
 # ===========================

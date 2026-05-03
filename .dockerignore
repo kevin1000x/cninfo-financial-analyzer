@@ -1,0 +1,60 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python virtualenvs (image installs its own deps)
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+
+# Editor / IDE
+.vscode
+.idea
+.DS_Store
+
+# Tests / dev tooling — not needed at runtime
+tests/
+docs/
+.pre-commit-config.yaml
+.flake8
+.coverage
+htmlcov/
+
+# Smoke + dev scripts (not needed inside the image)
+scripts/
+
+# CI / Claude / agent artifacts
+.github/
+.claude/
+CLAUDE.md
+
+# Existing docker compose (orchestration metadata, not image content)
+docker-compose.yml
+
+# Runtime data — never bake into image (HF Space + local both write fresh)
+data/raw/
+data/results/
+data/parsed/
+data/parsed_text/
+data/_web_jobs/
+logs/
+
+# Source xlsx is for build-time conversion only; runtime needs only the .txt
+# (.txt is COPYed via data/dictionaries/, the source/ subdir is excluded)
+data/dictionaries/source/
+
+# Generic xlsx exclusion — exempt the source dictionary above (Docker .dockerignore
+# applies in order, and we already excluded the source dir explicitly).
+*.xlsx
+
+# Cookies / secrets — must be injected as env at runtime, never baked in
+*cookies*.json
+*.env
+.env*

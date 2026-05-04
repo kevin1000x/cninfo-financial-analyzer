@@ -234,27 +234,42 @@ async def stream_job(job_id: str, _: None = Depends(require_token)):
         already_finished = job.finished.is_set()
         queue = None if already_finished else subscribe(job)
 
+        # Per-stream monotonic id stamps each yielded event. EventSource on
+        # the browser side surfaces it as MessageEvent.lastEventId so the
+        # frontend can dedupe across auto-reconnects (which always replay
+        # the full history). Numbering is deterministic across reconnects:
+        # event at history index k always carries id k+1.
+        seq = 0
         try:
             for payload in snapshot:
+                seq += 1
                 event_type = payload.get("type", "log")
                 yield {
                     "event": event_type,
                     "data": json.dumps(payload, ensure_ascii=False),
+                    "id": str(seq),
                 }
 
             if already_finished:
                 tail = snapshot[-1] if snapshot else None
                 if not tail or tail.get("type") != "eof":
-                    yield {"event": "eof", "data": json.dumps({"type": "eof"})}
+                    seq += 1
+                    yield {
+                        "event": "eof",
+                        "data": json.dumps({"type": "eof"}),
+                        "id": str(seq),
+                    }
                 return
 
             assert queue is not None
             while True:
                 payload = await queue.get()
+                seq += 1
                 event_type = payload.get("type", "log")
                 yield {
                     "event": event_type,
                     "data": json.dumps(payload, ensure_ascii=False),
+                    "id": str(seq),
                 }
                 if event_type == "eof":
                     return

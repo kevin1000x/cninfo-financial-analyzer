@@ -64,25 +64,33 @@ def _wait_for_status(client: TestClient, job_id: str, target: str, *, timeout: f
     raise AssertionError(f"job {job_id} did not reach {target} (last={last})")
 
 
-def _parse_sse(text: str) -> list[tuple[str, dict]]:
-    events: list[tuple[str, dict]] = []
+def _parse_sse(text: str) -> list[tuple[str, dict, str | None]]:
+    """Parse SSE chunks into (event_type, payload, id) triples.
+
+    id is None when the server didn't send an `id:` line for that event.
+    """
+    events: list[tuple[str, dict, str | None]] = []
     current_event: str | None = None
+    current_id: str | None = None
     current_data: list[str] = []
     for line in text.splitlines():
         if not line:
             if current_event is not None and current_data:
                 payload = "\n".join(current_data)
                 try:
-                    events.append((current_event, json.loads(payload)))
+                    events.append((current_event, json.loads(payload), current_id))
                 except json.JSONDecodeError:
-                    events.append((current_event, {"raw": payload}))
+                    events.append((current_event, {"raw": payload}, current_id))
             current_event = None
+            current_id = None
             current_data = []
             continue
         if line.startswith("event:"):
             current_event = line[len("event:"):].strip()
         elif line.startswith("data:"):
             current_data.append(line[len("data:"):].strip())
+        elif line.startswith("id:"):
+            current_id = line[len("id:"):].strip()
     return events
 
 
@@ -271,9 +279,18 @@ def test_completed_job_stream_replays_and_terminates(client):
         chunks = "".join(resp.iter_text())
 
     events = _parse_sse(chunks)
-    types = [t for t, _ in events]
+    types = [t for t, _, _ in events]
     assert "log" in types, f"expected log replay, got {types}"
     assert types[-1] == "eof", f"stream must end with eof, got {types}"
+
+    # Every event must carry a monotonic id so the frontend can dedupe
+    # across EventSource auto-reconnects (which replay full history).
+    ids = [eid for _, _, eid in events]
+    assert all(i is not None for i in ids), f"every event must have an id; got {ids}"
+    int_ids = [int(i) for i in ids]  # type: ignore[arg-type]
+    assert int_ids == sorted(int_ids), f"ids must be monotonically non-decreasing: {int_ids}"
+    assert len(set(int_ids)) == len(int_ids), f"ids must be unique within a stream: {int_ids}"
+    assert int_ids[0] == 1, f"first event id must start at 1, got {int_ids[0]}"
 
 
 def test_cookies_file_takes_precedence(client, monkeypatch, tmp_path):

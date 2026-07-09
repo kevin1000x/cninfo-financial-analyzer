@@ -106,6 +106,30 @@ python -m src.pipeline finish-work --confirm-work-complete
 python -m src.pipeline parse --input data/raw/ --output data/parsed/
 ```
 
+## AKShare 财务数据与 Supabase 缓存
+
+Web API 支持将 AKShare 年度财务指标自动转换为 TNI 所需的
+`stock_code,year,roa,ocf` 数据。调用 `POST /jobs` 时设置：
+
+```json
+{
+  "company_codes": ["600000"],
+  "years": [2020, 2021, 2022],
+  "financial_data_source": "akshare"
+}
+```
+
+指标优先使用 AKShare 的“总资产净利润率(%)”作为 ROA；AKShare 未提供总额经营现金流时，TNI 仍会使用 ROA 变化作为主绩效指标。
+
+可选的 Supabase 缓存只由后端访问。配置以下服务端环境变量后，已获取的指标会按 `(stock_code, year)` 缓存；绝不要把 service-role key 放到前端：
+
+```bash
+export SUPABASE_URL="https://<project-ref>.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="<server-only-secret>"
+```
+
+先应用 [`supabase/migrations/20260709191043_financial_metrics_cache.sql`](supabase/migrations/20260709191043_financial_metrics_cache.sql)。迁移启用 RLS、撤销 `anon` 与 `authenticated` 权限，仅授予 `service_role` 访问缓存表。Supabase 暂不可用时，后端会记录警告并直接使用 AKShare，不会中断分析任务。
+
 ## 配置
 
 编辑 `config.yaml` 来自定义：

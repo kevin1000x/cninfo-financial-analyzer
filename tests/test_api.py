@@ -33,12 +33,14 @@ class FakePipeline:
     the constructor (e.g. cookies)."""
 
     last_init_kwargs: dict = {}
+    last_run_kwargs: dict = {}
 
     def __init__(self, *args, **kwargs) -> None:
         FakePipeline.last_init_kwargs = kwargs
         self.last_output_file: str | None = None
 
-    def run_streaming(self, **_kwargs) -> pd.DataFrame:
+    def run_streaming(self, **kwargs) -> pd.DataFrame:
+        FakePipeline.last_run_kwargs = kwargs
         from loguru import logger
         logger.info("fake: phase 1 starting")
         logger.info("fake: phase 2 finished")
@@ -114,6 +116,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.delenv("CNINFO_COOKIES_FILE", raising=False)
     monkeypatch.delenv("CNINFO_COOKIES_JSON", raising=False)
     FakePipeline.last_init_kwargs = {}
+    FakePipeline.last_run_kwargs = {}
     api_runner.registry.reset_for_tests()
 
     with TestClient(api_main.app) as c:
@@ -136,6 +139,28 @@ def test_create_job_dev_mode_no_token(client):
     body = r.json()
     assert "job_id" in body
     assert body["status"] in {"pending", "running"}
+
+
+def test_akshare_source_supplies_runner_with_generated_financial_csv(client, monkeypatch):
+    generated_csv = "data/_web_jobs/akshare_financials.csv"
+    monkeypatch.setattr(
+        api_runner,
+        "_resolve_financial_data_csv",
+        lambda spec: generated_csv,
+    )
+
+    r = client.post(
+        "/jobs",
+        json={
+            "company_codes": ["600519"],
+            "years": [2022],
+            "financial_data_source": "akshare",
+        },
+    )
+
+    assert r.status_code == 200
+    _wait_for_status(client, r.json()["job_id"], "done")
+    assert FakePipeline.last_run_kwargs["financial_data_csv"] == generated_csv
 
 
 def test_token_required_when_set(client, monkeypatch):

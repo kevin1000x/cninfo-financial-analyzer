@@ -41,6 +41,7 @@ class JobSpec:
     years: List[int]
     report_types: List[str] = field(default_factory=lambda: ["annual"])
     financial_data_csv: Optional[str] = None
+    financial_data_source: str = "none"
     delete_pdf: bool = True
     save_parsed_text: bool = True
 
@@ -211,6 +212,40 @@ def _write_companies_csv(codes: List[str]) -> str:
     return str(path)
 
 
+def _write_financial_data_csv(financial_data) -> str:
+    base = Path("data/_web_jobs")
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / f"financial_metrics_{uuid4().hex[:8]}.csv"
+    financial_data.to_csv(path, index=False, encoding="utf-8-sig")
+    return str(path)
+
+
+def _resolve_financial_data_csv(spec: JobSpec) -> Optional[str]:
+    """Resolve an explicit CSV or generate one from the AKShare cache path."""
+    if spec.financial_data_csv:
+        return spec.financial_data_csv
+    if spec.financial_data_source == "none":
+        return None
+    if spec.financial_data_source != "akshare":
+        raise ValueError(f"unsupported financial_data_source: {spec.financial_data_source}")
+
+    from src.financial_data_sources import (
+        AKShareFinancialProvider,
+        CachedFinancialDataProvider,
+        NullFinancialMetricsStore,
+        SupabaseFinancialMetricsStore,
+    )
+
+    store = SupabaseFinancialMetricsStore.from_env() or NullFinancialMetricsStore()
+    metrics = CachedFinancialDataProvider(
+        store=store,
+        source=AKShareFinancialProvider(),
+    ).load(spec.company_codes, spec.years)
+    if metrics.empty:
+        raise ValueError("AKShare returned no annual financial metrics for this job")
+    return _write_financial_data_csv(metrics)
+
+
 def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
     sink_id = None
     job.status = "running"
@@ -230,12 +265,13 @@ def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
         cookies = _load_cninfo_cookies()
         pipeline = FinancialAnalysisPipeline(cookies=cookies)
         companies_csv = _write_companies_csv(job.spec.company_codes)
+        financial_data_csv = _resolve_financial_data_csv(job.spec)
 
         results = pipeline.run_streaming(
             company_csv=companies_csv,
             years=job.spec.years,
             report_types=job.spec.report_types,
-            financial_data_csv=job.spec.financial_data_csv,
+            financial_data_csv=financial_data_csv,
             delete_pdf=job.spec.delete_pdf,
             save_parsed_text=job.spec.save_parsed_text,
         )

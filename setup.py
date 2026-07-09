@@ -38,6 +38,8 @@ setup(
         'aiohttp>=3.9.0',
         'requests>=2.31.0',
         'httpx>=0.25.0',
+        'akshare==1.18.64',
+        'supabase==2.31.0',
         'pdfplumber>=0.10.0',
         'PyMuPDF>=1.23.0',
         'jieba>=0.42.1',

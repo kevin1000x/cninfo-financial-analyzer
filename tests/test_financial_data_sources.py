@@ -23,6 +23,35 @@ def test_akshare_provider_normalizes_annual_roa_and_operating_cash_flow():
     ]
 
 
+def test_akshare_provider_uses_financial_abstract_for_missing_operating_cash_flow():
+    from src.financial_data_sources import AKShareFinancialProvider
+
+    indicators = pd.DataFrame(
+        {
+            "日期": ["2020-12-31", "2021-12-31"],
+            "总资产净利润率(%)": [2.5, 3.5],
+        }
+    )
+    abstract = pd.DataFrame(
+        {
+            "指标": ["营业收入", "经营现金流量净额"],
+            "20201231": [1000.0, 200.0],
+            "20211231": [1100.0, 300.0],
+        }
+    )
+    provider = AKShareFinancialProvider(
+        fetch_frame=lambda **_: indicators,
+        fetch_abstract=lambda **_: abstract,
+    )
+
+    actual = provider.fetch(company_codes=["600000"], years=[2020, 2021])
+
+    assert actual.to_dict("records") == [
+        {"stock_code": "600000", "year": 2020, "roa": 2.5, "ocf": 200.0},
+        {"stock_code": "600000", "year": 2021, "roa": 3.5, "ocf": 300.0},
+    ]
+
+
 def test_cached_provider_fetches_the_prior_year_needed_for_performance_change():
     from src.financial_data_sources import CachedFinancialDataProvider
 

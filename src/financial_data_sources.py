@@ -75,8 +75,10 @@ class AKShareFinancialProvider:
     def __init__(
         self,
         fetch_frame: Optional[Callable[..., pd.DataFrame]] = None,
+        fetch_abstract: Optional[Callable[..., pd.DataFrame]] = None,
     ) -> None:
         self._fetch_frame = fetch_frame or self._default_fetch_frame
+        self._fetch_abstract = fetch_abstract or self._default_fetch_abstract
 
     @staticmethod
     def _default_fetch_frame(*, symbol: str, start_year: str) -> pd.DataFrame:
@@ -90,11 +92,47 @@ class AKShareFinancialProvider:
         )
 
     @staticmethod
+    def _default_fetch_abstract(*, symbol: str) -> pd.DataFrame:
+        try:
+            import akshare as ak
+        except ImportError as exc:  # pragma: no cover - covered by packaging
+            raise RuntimeError("AKShare is required for financial_data_source=akshare") from exc
+        return ak.stock_financial_abstract(symbol=symbol)
+
+    @staticmethod
     def _first_column(frame: pd.DataFrame, candidates: Sequence[str]) -> pd.Series:
         for name in candidates:
             if name in frame.columns:
                 return pd.to_numeric(frame[name], errors="coerce")
         return pd.Series(pd.NA, index=frame.index, dtype="Float64")
+
+    @staticmethod
+    def _abstract_operating_cash_flow(
+        abstract: pd.DataFrame, stock_code: str, years: Sequence[int]
+    ) -> pd.DataFrame:
+        if abstract is None or abstract.empty or "指标" not in abstract.columns:
+            return pd.DataFrame(columns=["stock_code", "year", "ocf"])
+
+        rows = abstract.loc[
+            abstract["指标"].astype(str).str.strip().eq("经营现金流量净额")
+        ]
+        if rows.empty:
+            return pd.DataFrame(columns=["stock_code", "year", "ocf"])
+
+        cash_flow_row = rows.iloc[0]
+        records = []
+        for year in years:
+            value_column = f"{year}1231"
+            if value_column not in cash_flow_row.index:
+                continue
+            value = pd.to_numeric(
+                pd.Series([cash_flow_row[value_column]]), errors="coerce"
+            ).iloc[0]
+            if pd.notna(value):
+                records.append(
+                    {"stock_code": stock_code, "year": year, "ocf": float(value)}
+                )
+        return pd.DataFrame(records, columns=["stock_code", "year", "ocf"])
 
     def fetch(
         self, company_codes: Sequence[str], years: Sequence[int]
@@ -127,7 +165,43 @@ class AKShareFinancialProvider:
 
         if not frames:
             return empty_metrics()
-        return normalize_metrics(pd.concat(frames, ignore_index=True))
+
+        metrics = normalize_metrics(pd.concat(frames, ignore_index=True))
+        missing_ocf = metrics.loc[metrics["ocf"].isna(), ["stock_code", "year"]]
+        if missing_ocf.empty:
+            return metrics
+
+        abstract_ocf_frames: list[pd.DataFrame] = []
+        for stock_code in missing_ocf["stock_code"].unique():
+            missing_years = missing_ocf.loc[
+                missing_ocf["stock_code"].eq(stock_code), "year"
+            ].tolist()
+            try:
+                abstract_ocf_frames.append(
+                    self._abstract_operating_cash_flow(
+                        self._fetch_abstract(symbol=stock_code), stock_code, missing_years
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Unable to load AKShare operating cash flow for {stock_code}: {exc}"
+                )
+
+        if not abstract_ocf_frames:
+            return metrics
+        abstract_ocf = pd.concat(abstract_ocf_frames, ignore_index=True)
+        if abstract_ocf.empty:
+            return metrics
+
+        cash_flow_by_key = {
+            (row.stock_code, row.year): row.ocf
+            for row in abstract_ocf.itertuples(index=False)
+        }
+        for index, row in metrics.loc[metrics["ocf"].isna()].iterrows():
+            value = cash_flow_by_key.get((row["stock_code"], row["year"]))
+            if value is not None:
+                metrics.at[index, "ocf"] = value
+        return normalize_metrics(metrics)
 
 
 class CachedFinancialDataProvider:

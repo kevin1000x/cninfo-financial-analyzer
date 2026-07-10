@@ -128,7 +128,7 @@ export SUPABASE_URL="https://<project-ref>.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="<server-only-secret>"
 ```
 
-先应用 [`supabase/migrations/20260709191043_financial_metrics_cache.sql`](supabase/migrations/20260709191043_financial_metrics_cache.sql)。迁移启用 RLS、撤销 `anon` 与 `authenticated` 权限，仅授予 `service_role` 访问缓存表；如项目已配置 `rls_auto_enable` 事件触发器，也会撤销其对外 RPC 执行权限。Supabase 暂不可用时，后端会记录警告并直接使用 AKShare，不会中断分析任务。
+先应用 [`supabase/migrations/20260710170119_financial_metrics_cache.sql`](supabase/migrations/20260710170119_financial_metrics_cache.sql)。迁移启用 RLS、撤销 `anon` 与 `authenticated` 权限，仅授予 `service_role` 访问缓存表；如项目已配置 `rls_auto_enable` 事件触发器，也会撤销其对外 RPC 执行权限。Supabase 暂不可用时，后端会记录警告并直接使用 AKShare，不会中断分析任务。
 
 ## 配置
 

@@ -1,4 +1,5 @@
 -- Server-side cache for AKShare annual data used by TNI calculations.
+-- Version matches the migration recorded in the deployed Supabase project.
 -- This table is intentionally inaccessible to browser clients.
 create table public.financial_metrics (
     stock_code text not null check (stock_code ~ '^[0-9]{6}$'),

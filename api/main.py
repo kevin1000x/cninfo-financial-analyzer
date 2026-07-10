@@ -48,6 +48,7 @@ STOCK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MIN_YEAR = 1990
 MAX_TASKS = 100
 ALLOWED_FIN_CSV_ROOTS = ("examples", "data")
+ALLOWED_FINANCIAL_DATA_SOURCES = {"none", "akshare"}
 
 
 app = FastAPI(title="cninfo-analyzer web API", version="0.2.0")
@@ -92,6 +93,7 @@ class CreateJobRequest(BaseModel):
     years: List[int] = Field(..., min_length=1, max_length=20)
     report_types: List[str] = Field(default_factory=lambda: ["annual"])
     financial_data_csv: Optional[str] = None
+    financial_data_source: str = "none"
     delete_pdf: bool = True
     save_parsed_text: bool = True
 
@@ -145,6 +147,16 @@ class CreateJobRequest(BaseModel):
             raise ValueError(f"financial_data_csv not found: {v}")
         return str(resolved)
 
+    @field_validator("financial_data_source")
+    @classmethod
+    def _validate_financial_data_source(cls, v: str) -> str:
+        if v not in ALLOWED_FINANCIAL_DATA_SOURCES:
+            raise ValueError(
+                "financial_data_source must be one of "
+                f"{sorted(ALLOWED_FINANCIAL_DATA_SOURCES)}"
+            )
+        return v
+
     @model_validator(mode="after")
     def _validate_total_tasks(self):
         total = len(self.company_codes) * len(self.years) * len(self.report_types)
@@ -183,6 +195,7 @@ async def create_job(
         years=req.years,
         report_types=req.report_types,
         financial_data_csv=req.financial_data_csv,
+        financial_data_source=req.financial_data_source,
         delete_pdf=req.delete_pdf,
         save_parsed_text=req.save_parsed_text,
     )

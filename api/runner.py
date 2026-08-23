@@ -306,22 +306,124 @@ def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
 
 
 def start_job(spec: JobSpec) -> JobState:
-    """Reserve the single job slot, then kick off the worker thread.
+    """Reserve the single job slot, then execute the job.
+
+    Default execution is an isolated worker PROCESS (spawn) so CPU-heavy
+    pdfplumber parsing cannot stall the web event loop via the GIL. The
+    parent keeps the registry, SSE history/subscribers and result binding
+    in-process; the child only streams small JSON events over a pipe.
+
+    Set JOB_RUNNER_MODE=thread to use the legacy in-process thread (used by
+    test fixtures that monkeypatch run_job / src.pipeline, which cannot
+    cross a spawn boundary).
 
     Raises JobAlreadyRunning if another job is currently active."""
     job = registry.reserve(spec)
     loop = asyncio.get_running_loop()
-    # Resolve run_job via module globals so tests can monkeypatch it
-    # (closure-captured references would defeat that).
+    # Resolve execution helpers via module globals so tests can monkeypatch
+    # them (closure-captured references would defeat that).
     import api.runner as _self
-    thread = threading.Thread(
-        target=_self.run_job,
-        args=(job, loop),
+    mode = os.environ.get("JOB_RUNNER_MODE", "process")
+    if mode == "thread":
+        thread = threading.Thread(
+            target=_self.run_job,
+            args=(job, loop),
+            name=f"job-{job.id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return job
+    return _self.start_job_process(job, loop)
+
+
+def start_job_process(job: JobState, loop: asyncio.AbstractEventLoop) -> JobState:
+    """Spawn the worker process and a pump thread that relays its events.
+
+    The pump owns all JobState mutation for the process path, converts a
+    dead/crashed worker into a job error, and always releases the job slot."""
+    import multiprocessing
+
+    from api.worker import run_child
+
+    ctx = multiprocessing.get_context("spawn")
+    recv_conn, send_conn = ctx.Pipe(duplex=False)
+    spec_dict = {
+        name: getattr(job.spec, name)
+        for name in job.spec.__dataclass_fields__  # type: ignore[attr-defined]
+    }
+    proc = ctx.Process(
+        target=run_child,
+        args=(spec_dict, send_conn),
         name=f"job-{job.id[:8]}",
         daemon=True,
     )
-    thread.start()
+    job.started_at = _now_iso()
+    proc.start()
+    send_conn.close()  # parent never sends; closing frees the write end
+    pump = threading.Thread(
+        target=_pump_process_events,
+        args=(job, loop, recv_conn, proc),
+        name=f"pump-{job.id[:8]}",
+        daemon=True,
+    )
+    pump.start()
     return job
+
+
+def _apply_process_payload(job: JobState, payload: Dict[str, Any]) -> None:
+    """Mirror terminal child events into JobState for status polling."""
+    event_type = payload.get("type")
+    if event_type == "status" and payload.get("status") == "running":
+        job.status = "running"
+        job.started_at = job.started_at or _now_iso()
+    elif event_type == "done":
+        job.status = "done"
+        job.result_path = payload.get("result_path")
+        job.finished_at = _now_iso()
+    elif event_type == "error":
+        job.status = "error"
+        job.error = payload.get("error")
+        job.finished_at = _now_iso()
+
+
+def _pump_process_events(
+    job: JobState,
+    loop: asyncio.AbstractEventLoop,
+    conn,
+    proc,
+) -> None:
+    """Relay worker events to the asyncio loop; guarantee eof + slot release."""
+    saw_terminal = False
+    try:
+        while True:
+            payload = conn.recv()  # raises EOFError when the child closes
+            _apply_process_payload(job, payload)
+            _enqueue(loop, job, payload)
+            event_type = payload.get("type")
+            if event_type in {"done", "error"}:
+                saw_terminal = True
+            if event_type == "eof":
+                break
+    except (EOFError, OSError):
+        pass
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+        proc.join(timeout=30)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+        if not saw_terminal and job.status in {"pending", "running"}:
+            job.status = "error"
+            job.error = (
+                f"worker process exited unexpectedly (exitcode={proc.exitcode})"
+            )
+            job.finished_at = _now_iso()
+            _enqueue(loop, job, {"type": "error", "error": job.error})
+        _enqueue(loop, job, {"type": "eof"})
+        registry.release(job.id)
 
 
 def subscribe(job: JobState) -> asyncio.Queue:

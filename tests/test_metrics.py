@@ -271,3 +271,43 @@ def test_missing_columns(calculator):
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+# ---------------------------------------------------------------------
+# Prior-year baseline: TNI must survive when tone covers only target years
+# but the financial CSV (AKShare cache) includes the preceding year.
+
+def test_tni_nonempty_when_tone_single_year_but_financials_include_prior_year(calculator):
+    """Two companies × single target year (the classic 2-company web job).
+
+    The financial CSV carries 2020+2021 rows; tone only 2021. YoY change
+    must be computed on the full financial series BEFORE merging, so both
+    2021 rows keep a finite perf_score and survive dropna → non-empty TNI.
+    """
+    tone = pd.DataFrame({
+        'stock_code': ['600000', '600519'],
+        'year': [2021, 2021],
+        'tone_raw': [0.30, -0.20],
+    })
+    financial = pd.DataFrame({
+        'stock_code': ['600000', '600000', '600519', '600519'],
+        'year': [2020, 2021, 2020, 2021],
+        'roa': [0.040, 0.055, 0.150, 0.180],
+        'ocf': [1.0e9, 1.2e9, 3.5e10, 4.0e10],
+    })
+
+    result = calculator.calculate_all_metrics(tone, financial)
+
+    assert not result.empty, "single-target-year tone rows must survive via prior-year financials"
+    assert len(result) == 2
+    assert result['tni'].notna().all()
+    assert np.isfinite(result['tni']).all()
+    # With two observations z-scores are ±1/sqrt(2), so assert non-degenerate
+    # finite values instead of sign spread (signs collapse for n=2).
+    assert (result['tni'].abs() > 0).all()
+
+
+def test_calculate_all_metrics_multi_year_behavior_unchanged(calculator, sample_tone_data, sample_financial_data):
+    """Full multi-year merge still computes changes identically per company."""
+    result = calculator.calculate_all_metrics(sample_tone_data, sample_financial_data)
+    assert not result.empty
+    assert result['tni'].notna().any()

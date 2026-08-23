@@ -227,25 +227,29 @@ class MetricsCalculator:
         Returns:
             DataFrame with all calculated metrics
         """
+        # Performance changes must be computed on the FULL financial series
+        # (all years available for each company) BEFORE merging with tone
+        # results. Tone results typically cover only the target years; if the
+        # merge happened first, every company's first row would lose its
+        # prior-year baseline and its YoY change would be NaN.
+        financial = financial_data.copy()
+        for metric in self.performance_indicators:
+            if metric in financial.columns:
+                change_col = f'{metric}_change'
+                financial[change_col] = self.calculate_performance_change(financial, metric)
+
+        financial['perf_score'] = self.calculate_performance_score(
+            financial,
+            primary_metric='roa',
+            secondary_metric='ocf'
+        )
+
         # Merge datasets
-        df = self.merge_tone_and_financial(tone_results, financial_data)
+        df = self.merge_tone_and_financial(tone_results, financial)
 
         if df.empty:
             logger.error("Failed to merge data")
             return pd.DataFrame()
-
-        # Calculate performance changes
-        for metric in self.performance_indicators:
-            if metric in df.columns:
-                change_col = f'{metric}_change'
-                df[change_col] = self.calculate_performance_change(df, metric)
-
-        # Calculate composite performance score
-        df['perf_score'] = self.calculate_performance_score(
-            df,
-            primary_metric='roa',
-            secondary_metric='ocf'
-        )
 
         # Handle missing data according to configured strategy
         df = self.handle_missing_data(df)

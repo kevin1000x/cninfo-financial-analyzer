@@ -112,6 +112,8 @@ def client(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr("src.pipeline.FinancialAnalysisPipeline", FakePipeline)
+    monkeypatch.setenv("JOB_RUNNER_MODE", "thread")  # stubs can't cross spawn
+    monkeypatch.delenv("CNINFO_JOB_TEST_MODE", raising=False)
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.delenv("CNINFO_COOKIES_FILE", raising=False)
     monkeypatch.delenv("CNINFO_COOKIES_JSON", raising=False)

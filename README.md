@@ -2,6 +2,48 @@
 
 一个用于从 CNINFO（巨潮资讯网）下载、解析与分析中文公司年报的完整 Python 工具包。
 
+---
+
+## 它得出过什么结论
+
+**问题**：业绩差的公司，年报是不是写得更难读？
+
+**方法**：沪市主板 1,737 家里固定种子抽 200 家 → 下载 2024 年报 → 取 MD&A 章节算
+中文适配 Gunning-Fog → 与 AKShare 的 ROA 配对 → 167 对可用。
+
+```
+        抽样框 1,737           抽 200            下载 171         MD&A 167
+  巨潮股票清单 ─────▶ 种子 20260902 ─────▶ 年报 PDF ─────▶ Fog 指数 ─┐
+                                                                      ├─▶ 167 对
+                        AKShare ────────────────────▶ ROA 187 ────────┘
+```
+
+**结论 —— 一个零结果**：
+
+```
+Pearson r(Fog, ROA) = +0.025    p = 0.75    n = 167
+亏损组 (n=38)  Fog 均值 5.3111
+盈利组 (n=129) Fog 均值 5.3120      两组差 0.0009
+```
+
+🔴 **但它只能读一半。** 本文所用的 Fog 指数在公司之间几乎不变（变异系数 **8.4%**），
+且「复杂词」的判定退回了字符数阈值（配置里声明的常用词表在仓库中不存在）。
+⇒ 正确的读法是「**在这套测量下没有观察到关系**」，**不是**「可读性与业绩无关」。
+
+**完整结论、逐条局限与复核记录**：[`docs/FINDING-01.md`](docs/FINDING-01.md)
+
+**怎么重跑**（每一步可断点续，抽样种子写死）：
+
+```bash
+python scripts/readability_vs_performance.py sample
+python scripts/readability_vs_performance.py fetch
+python scripts/readability_vs_performance.py fog
+python scripts/readability_vs_performance.py roa
+python scripts/readability_vs_performance.py analyze
+```
+
+---
+
 ## 概述
 
 本项目提供端到端流程，用于：

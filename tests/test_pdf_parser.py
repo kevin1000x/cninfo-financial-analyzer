@@ -325,20 +325,32 @@ def test_multiple_keywords(parser):
 
 
 def test_extract_mda_section_skips_table_of_contents(parser):
-    """Should skip TOC entries and extract the real MD&A body."""
-    text = """
+    """Should skip TOC entries and extract the real MD&A body.
+
+    The body is padded to a realistic length on purpose.  Measured over 74 real
+    filings on 2026-09-03, genuine MD&A sections run 12,460-110,874 characters
+    while wrong candidates (TOC entries, cross-references in running text) run
+    15-363; `MIN_MDA_CANDIDATE_CHARS` sits in that gap.  A 60-character "body"
+    was never a realistic fixture, and keeping one would mean the guard that
+    makes this function work on real filings could not be expressed here.
+    """
+    head = """
     目 录
     第三章 管理层讨论与分析 ...................................................................... 22
     3.1 总体经营情况 ................................................................................. 22
     第四章 公司治理 ................................................................................... 62
 
     第三章 管理层讨论与分析
-    本年度公司经营情况良好，实现营业收入持续增长。
-    管理层认为核心业务保持稳健发展。
-
+"""
+    body_line = (
+        "    本年度公司经营情况良好，实现营业收入持续增长，"
+        "管理层认为核心业务保持稳健发展。" + chr(10)
+    )
+    tail = """
     第四章 公司治理
     公司治理内容如下。
     """
+    text = head + body_line * 40 + tail
 
     mda = parser.extract_mda_section(text)
 
@@ -346,6 +358,46 @@ def test_extract_mda_section_skips_table_of_contents(parser):
     assert '核心业务保持稳健发展' in mda
     assert '...................................................................... 22' not in mda
     assert '第四章 公司治理' not in mda
+
+
+def test_extract_mda_section_skips_toc_entry_without_dot_leaders(parser):
+    """The failure that made 64% of a 171-filing corpus unusable.
+
+    `_looks_like_table_of_contents` only recognises dot-leader formatting
+    ("...... 22").  Plenty of annual reports print a plain contents line --
+    section name, whitespace, page number -- and that line passed the guard.
+    `_find_section_end` then stopped at the *next contents line*, so the whole
+    "MD&A" came out ~15-110 characters long.
+
+    Two real cases, both Shanghai main board 2024:
+      600030  yielded a 15-char contents entry; the keyword occurs 24 times in
+              that filing and the real section is a later match
+      600035  yielded a 102-char cross-reference from the risk section, which
+              only names the MD&A rather than starting it
+
+    The search loop was already right.  The validator was too permissive and
+    stopped it on the first wrong hit, so the fix is a length floor.
+    """
+    body_line = (
+        "    本年度公司经营情况良好，实现营业收入持续增长，"
+        "管理层认为核心业务保持稳健发展。" + chr(10)
+    )
+    head = """
+    目录
+    第三节 管理层讨论与分析                                   12
+    第四节 公司治理                                           48
+
+    第三节 管理层讨论与分析
+"""
+    text = head + body_line * 40 + chr(10) + "    第四节 公司治理" + chr(10)
+
+    mda = parser.extract_mda_section(text)
+
+    assert len(mda) > 1000, "回到了目录条目，长度floor没有生效"
+    assert '经营情况良好' in mda
+    # The contents line carries the page number; the real heading does not.
+    assert '12' not in mda.splitlines()[0]
+    assert '第四节 公司治理' not in mda
 
 
 def test_extract_mda_section_returns_full_text_when_only_toc_found(parser):

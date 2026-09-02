@@ -16,6 +16,25 @@ from loguru import logger
 import pdfplumber
 
 
+#: An MD&A candidate shorter than this is not an MD&A section.
+#:
+#: Measured 2026-09-03 over 74 Shanghai-main-board 2024 filings: candidates
+#: that turned out to be wrong ran 15-363 characters, real MD&A sections ran
+#: 12,460-110,874.  Nothing at all landed in between, so the exact value
+#: inside that gap does not matter; 1000 keeps a wide margin on both sides.
+#:
+#: The two wrong shapes, both real:
+#:   600030  a table-of-contents entry (section name followed by its page
+#:           number) with no dot leaders, so `_looks_like_table_of_contents`
+#:           cannot see it
+#:   600035  a cross-reference inside the risk section that merely names the
+#:           MD&A rather than starting it
+#: In both filings the keyword occurs many times and the real section is a
+#: later match -- the search loop was already right; the validator was too
+#: permissive and stopped it on the first wrong hit.
+MIN_MDA_CANDIDATE_CHARS = 1000
+
+
 class PDFParser:
     """
     Parser for extracting text and tables from PDF reports
@@ -247,6 +266,13 @@ class PDFParser:
         """
         stripped = text.strip()
         if not stripped:
+            return False
+
+        # Length first: it is the cheapest check and the one that actually
+        # separates the two populations (see MIN_MDA_CANDIDATE_CHARS).
+        # Returning False here lets the caller's loop keep looking, which is
+        # what finds the real section.
+        if len(stripped) < MIN_MDA_CANDIDATE_CHARS:
             return False
 
         if self._looks_like_table_of_contents(stripped):

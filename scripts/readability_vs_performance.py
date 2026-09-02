@@ -59,6 +59,7 @@ PDF_DIR = REPO / "data" / "raw" / "rvp"
 SAMPLE_CSV = OUT / "rvp_sample.csv"
 MANIFEST = OUT / "rvp_manifest.json"
 FOG_CSV = OUT / "rvp_fog.csv"
+FOG_CACHE = OUT / "rvp_fog_cache.json"
 ROA_CSV = OUT / "rvp_roa.csv"
 RESULT = OUT / "rvp_result.json"
 
@@ -226,10 +227,21 @@ def stage_fog(year: int) -> None:
     parser = PDFParser(cfg)
     analyzer = TextAnalyzer(cfg, cfg["analyzer"]["sentiment_dict_path"])
 
+    # Resumable: one filing takes 15-30s to parse, so a 200-company run is
+    # over an hour.  Losing that to one crash near the end is not acceptable,
+    # and `no_pdf` is deliberately NOT cached -- a filing that arrives later
+    # must still be picked up on the next run.
+    cache = {}
+    if FOG_CACHE.exists():
+        cache = json.loads(FOG_CACHE.read_text(encoding="utf-8"))
+
     out = []
-    for row in _rows(SAMPLE_CSV):
+    for i, row in enumerate(_rows(SAMPLE_CSV), 1):
         code = row["stock_code"]
         pdf = PDF_DIR / "{}_{}.pdf".format(code, year)
+        if code in cache and pdf.exists():
+            out.append(cache[code])
+            continue
         if not pdf.exists():
             out.append({"stock_code": code, "status": "no_pdf",
                         "fog_index": "", "mda_chars": ""})
@@ -237,7 +249,15 @@ def stage_fog(year: int) -> None:
             try:
                 text = parser.extract_text(str(pdf))
                 mda = parser.extract_mda_section(text) or ""
-                if len(mda) < MIN_MDA_CHARS:
+                # `extract_mda_section` falls through to `return text` when no
+                # candidate validates.  That fallback is a whole annual report:
+                # it sails past any length check and would then be scored as if
+                # it were the MD&A -- a silent wrong answer, and the only kind
+                # of failure this study cannot detect after the fact.
+                if text and len(mda) > 0.5 * len(text):
+                    out.append({"stock_code": code, "status": "mda_fallback_fulltext",
+                                "fog_index": "", "mda_chars": len(mda)})
+                elif len(mda) < MIN_MDA_CHARS:
                     out.append({"stock_code": code, "status": "mda_too_short",
                                 "fog_index": "", "mda_chars": len(mda)})
                 else:
@@ -249,7 +269,12 @@ def stage_fog(year: int) -> None:
                 out.append({"stock_code": code,
                             "status": "error:" + type(exc).__name__,
                             "fog_index": "", "mda_chars": ""})
+            cache[code] = out[-1]
+            if i % 5 == 0:
+                FOG_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=1),
+                                     encoding="utf-8")
         print("  {} -> {} {}".format(code, out[-1]["status"], out[-1]["fog_index"]))
+    FOG_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
     _write(FOG_CSV, out, ["stock_code", "status", "fog_index", "mda_chars"])
 
 
@@ -263,7 +288,18 @@ def stage_roa(year: int) -> None:
     reason to hand-roll a different ROA, which would make the number
     unreproducible from the repo's own commands.
     """
+    import akshare
+
     from src.financial_data_sources import AKShareFinancialProvider
+
+    # Record the version that actually produced the numbers.  requirements.txt
+    # pins 1.18.64; if the installed version differs, the pin is what a reader
+    # following the README would get, so the gap has to be visible.
+    version = getattr(akshare, "__version__", "unknown")
+    (OUT / "rvp_roa_provenance.json").write_text(
+        json.dumps({"akshare_version": version, "year": year},
+                   ensure_ascii=False, indent=1), encoding="utf-8")
+    print("akshare version in use:", version)
 
     codes = [r["stock_code"] for r in _rows(SAMPLE_CSV)]
     # One AKShare call per company; the provider handles the schema mapping.

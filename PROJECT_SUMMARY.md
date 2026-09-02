@@ -105,7 +105,7 @@ metadata = downloader.download_reports(
 
 **主要特点**：
 
-* 多解析引擎：以 pdfplumber 为主、PyMuPDF 作备用
+* 文本解析：pdfplumber；扫描件走 OCR 兜底
 * 使用关键词匹配提取管理层讨论与分析（MD&A）章节
 * 当 MD&A 过短、像目录或占全文比例异常时，分析阶段会自动回退到全文
 * 识别并提取财务报表（资产负债表、利润表、现金流量表）
@@ -387,7 +387,7 @@ make check
 
 **Parser（解析器）**：
 
-* `pdf_engine`：`"pdfplumber"` 或 `"pymupdf"`
+* `pdf_engine`：`"pdfplumber"`
 * `use_ocr`：对扫描件启用 OCR（默认：false）
 * `extract_tables`：是否提取表格（默认：true）
 
@@ -518,7 +518,6 @@ MIT 许可证 — 详见 LICENSE 文件。
 
 * Jieba：MIT
 * pdfplumber：MIT
-* PyMuPDF：AGPL v3（可选商业许可）
 * pandas：BSD 3-Clause
 * 其它依赖：详见 requirements.txt
 

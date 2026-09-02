@@ -7,7 +7,6 @@ supabase==2.31.0
 
 # PDF processing
 pdfplumber>=0.10.0
-PyMuPDF>=1.23.0
 tabula-py>=2.8.0
 camelot-py[cv]>=0.11.0
 pytesseract>=0.3.10  # For OCR fallback

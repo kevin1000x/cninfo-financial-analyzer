@@ -14,13 +14,12 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from loguru import logger
 import pdfplumber
-import fitz  # PyMuPDF
 
 
 class PDFParser:
     """
     Parser for extracting text and tables from PDF reports
-    Supports multiple engines: pdfplumber (primary), PyMuPDF (fallback)
+    Text extraction: pdfplumber (primary), OCR (fallback for scanned PDFs)
     """
 
     def __init__(self, config: Dict):
@@ -104,33 +103,6 @@ class PDFParser:
 
         return text
 
-    def extract_text_pymupdf(self, pdf_path: str) -> str:
-        """
-        Extract text using PyMuPDF (fallback)
-
-        Args:
-            pdf_path: Path to PDF file
-
-        Returns:
-            Extracted text
-        """
-        text = ""
-
-        try:
-            doc = fitz.open(pdf_path)
-
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                text += page.get_text() + "\n\n"
-
-            doc.close()
-            logger.debug(f"Extracted {len(text)} characters from {pdf_path}")
-
-        except Exception as e:
-            logger.error(f"PyMuPDF extraction failed: {e}")
-
-        return text
-
     def extract_text(self, pdf_path: str) -> str:
         """
         Extract text from PDF using configured engine
@@ -143,13 +115,15 @@ class PDFParser:
         """
         if self.pdf_engine == 'pdfplumber':
             text = self.extract_text_pdfplumber(pdf_path)
-        elif self.pdf_engine == 'pymupdf':
-            text = self.extract_text_pymupdf(pdf_path)
-        elif self.pdf_engine == 'both':
+        elif self.pdf_engine in ('pymupdf', 'both'):
+            # PyMuPDF 已于 2026-09-02 移除：它是 AGPL v3，而本项目声明 MIT。
+            # 这里显式报出来而不是静默退回——在配置里写了这个引擎的人
+            # 应当知道自己要的那条路径已经不存在了。
+            logger.warning(
+                f"pdf_engine='{self.pdf_engine}' 已不再支持"
+                "（PyMuPDF 因 AGPL v3 与本项目的 MIT 许可证冲突而移除），改用 pdfplumber"
+            )
             text = self.extract_text_pdfplumber(pdf_path)
-            if not text:
-                logger.warning("pdfplumber failed, trying PyMuPDF")
-                text = self.extract_text_pymupdf(pdf_path)
         else:
             logger.warning(f"Unknown pdf_engine '{self.pdf_engine}', defaulting to pdfplumber")
             text = self.extract_text_pdfplumber(pdf_path)

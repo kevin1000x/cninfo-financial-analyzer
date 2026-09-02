@@ -27,7 +27,7 @@ downloader:
 
 # PDF 解析器 设置
 parser:
-  pdf_engine: "pdfplumber"  # 可选：pdfplumber, pymupdf, both
+  pdf_engine: "pdfplumber"  # 目前只有 pdfplumber；PyMuPDF 因 AGPL v3 已移除
   output_path: "data/parsed"
   max_saved_reports: 10     # 非流式路径仅保留最近 10 份解析文本/表格目录
   use_ocr: false

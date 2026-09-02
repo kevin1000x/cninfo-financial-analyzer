@@ -517,7 +517,7 @@ config['parser']['use_ocr'] = True
 parser = PDFParser(config)
 
 # 或尝试替代解析器
-config['parser']['pdf_engine'] = 'pymupdf'
+config['parser']['pdf_engine'] = 'pdfplumber'
 parser = PDFParser(config)
 ```
 

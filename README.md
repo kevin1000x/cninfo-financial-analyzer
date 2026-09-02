@@ -143,7 +143,7 @@ downloader:
   timeout: 30
 
 parser:
-  pdf_engine: "pdfplumber"  # 或 "pymupdf"
+  pdf_engine: "pdfplumber"
   max_saved_reports: 10
   use_ocr: false
   ocr_language: "chi_sim"
@@ -279,7 +279,7 @@ TNI = Standardized_Tone × (-1) × Standardized_Performance
 ### PDF 解析
 
 * **Herrkun 的 pdfplumber 示例**：用于中文财务报告解析
-* 相关库：pdfplumber（首选）、PyMuPDF（备用）、tabula-py/camelot（表格提取）
+* 相关库：pdfplumber（文本）、tabula-py/camelot（表格提取）、pytesseract（扫描件 OCR 兜底）
 
 ### 中文 NLP
 
@@ -438,7 +438,6 @@ pytest --cov=src tests/
 
 * Jieba：MIT 许可证
 * pdfplumber：MIT 许可证
-* PyMuPDF：AGPL v3（可选商业许可）
 * pandas、numpy、aiohttp：BSD 许可证
 * 中文金融情感词典：学术使用（引用原作者）
 

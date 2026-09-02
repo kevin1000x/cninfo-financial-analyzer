@@ -368,10 +368,9 @@ def test_pdf_engine_configuration(config):
     parser1 = PDFParser(config)
     assert parser1.pdf_engine == 'pdfplumber'
 
-    # pymupdf
-    config['parser']['pdf_engine'] = 'pymupdf'
-    parser2 = PDFParser(config)
-    assert parser2.pdf_engine == 'pymupdf'
+    # PyMuPDF 已移除（AGPL v3 与本项目的 MIT 声明冲突）：
+    # 配置值仍然写得进去，但不会再有任何 PyMuPDF 代码路径。
+    assert not hasattr(parser1, 'extract_text_pymupdf')
 
 
 def test_batch_parse_empty_list(parser):

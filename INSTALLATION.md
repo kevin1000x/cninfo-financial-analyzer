@@ -284,7 +284,6 @@ requests>=2.31.0        # HTTP 请求库
 pandas>=2.1.0           # 数据处理
 numpy>=1.24.0           # 数值计算
 pdfplumber>=0.10.0      # PDF 解析
-PyMuPDF>=1.23.0         # 可替代的 PDF 解析器
 jieba>=0.42.1           # 中文分词
 PyYAML>=6.0             # 配置文件解析
 loguru>=0.7.0           # 日志库

@@ -41,7 +41,6 @@ setup(
         'akshare==1.18.64',
         'supabase==2.31.0',
         'pdfplumber>=0.10.0',
-        'PyMuPDF>=1.23.0',
         'jieba>=0.42.1',
         'pandas>=2.1.0',
         'numpy>=1.24.0',

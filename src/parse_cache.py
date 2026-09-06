@@ -21,6 +21,7 @@ payload schema invalidates stale entries wholesale.
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import json
@@ -139,13 +140,17 @@ class SupabaseParsedReportStore:
         if not rows:
             return None
         payload = rows[0].get("payload")
+        if payload is None:
+            return None
         if isinstance(payload, str):
-            return payload.encode("latin-1")  # supabase-py may return memoryview text
+            # payload column is base64 text (PostgREST/JSON cannot round-trip
+            # raw bytea through the REST interface).
+            return base64.b64decode(payload)
         return bytes(payload)
 
     def store(self, key: str, blob: bytes) -> None:
         self._client.table("parsed_reports").upsert(
-            {"cache_key": key, "payload": blob},
+            {"cache_key": key, "payload": base64.b64encode(blob).decode("ascii")},
             on_conflict="cache_key",
         ).execute()
 

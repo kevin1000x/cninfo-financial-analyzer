@@ -28,6 +28,7 @@ from .utils import (
     sanitize_filename
 )
 from .downloader import CNINFODownloader
+from .parse_cache import ParseCache, cache_key_for_announcement
 from .pdf_parser import PDFParser
 from .text_analyzer import TextAnalyzer
 from .metrics import MetricsCalculator, load_financial_data_from_csv
@@ -99,6 +100,10 @@ class FinancialAnalysisPipeline:
     End-to-end pipeline for financial report analysis
     """
 
+    # Class-level default so __new__-constructed instances (tests, older
+    # call sites that bypass __init__) behave as "cache disabled".
+    parse_cache: Optional[ParseCache] = None
+
     def __init__(self,
                  config_path: str = 'config.yaml',
                  sentiment_dict_path: Optional[str] = None,
@@ -129,6 +134,11 @@ class FinancialAnalysisPipeline:
         self.parser = PDFParser(self.config)
         self.analyzer = TextAnalyzer(self.config, sentiment_dict_path)
         self.metrics_calculator = MetricsCalculator(self.config)
+        self.parse_cache = ParseCache.from_env()
+        if self.parse_cache.enabled:
+            logger.info("Parse cache enabled (disk"
+                        + (" + supabase" if self.parse_cache.remote else "")
+                        + ")")
         self.company_map: Dict[str, str] = {}
         self.last_output_file: Optional[str] = None
         analysis_config = self.config.get('analysis', {})
@@ -1074,6 +1084,46 @@ class FinancialAnalysisPipeline:
 
         return final_results
 
+    def _analyze_from_cached_parse(self,
+                                   stock_code: str,
+                                   year: int,
+                                   report_type: str,
+                                   announcement: Dict,
+                                   cached: Dict) -> Optional[Dict]:
+        """
+        Analyze from a cached parse result, producing the same analysis
+        dict shape as _process_single_report. The PDF was never downloaded
+        on this path, so file_path/text_path stay empty and file_size_bytes
+        is restored from the cache entry.
+        """
+        text, text_source = self._select_analysis_text({
+            'text': cached.get('text', ''),
+            'mda_text': cached.get('mda_text', ''),
+        })
+        if not text:
+            logger.warning("  Cached parse has no usable text")
+            return None
+
+        analysis = self.analyzer.analyze_text(text, None)
+        if cached.get('file_size_bytes'):
+            analysis['file_size_bytes'] = cached['file_size_bytes']
+
+        analysis['stock_code'] = stock_code
+        analysis['company_name'] = self.company_map.get(stock_code, '')
+        analysis['year'] = year
+        analysis['report_type'] = report_type
+        analysis['file_path'] = ''
+        analysis['text_path'] = ''
+        analysis['download_date'] = self._normalize_download_date(
+            announcement.get('announcementTime', '')
+        )
+        analysis['announcement_title'] = announcement.get('announcementTitle', '')
+        analysis['analysis_text_source'] = text_source
+
+        logger.info(f"  Analyzed from cache: Tone={analysis.get('tone_raw', 0):.4f}, "
+                    f"Fog={analysis.get('fog_index', 0):.2f}")
+        return analysis
+
     def _process_single_report(self,
                                stock_code: str,
                                year: int,
@@ -1095,6 +1145,20 @@ class FinancialAnalysisPipeline:
         Returns:
             Analysis result dict, or None on failure
         """
+        cache_key = cache_key_for_announcement(announcement)
+        cached = self.parse_cache.get(cache_key) if self.parse_cache and cache_key else None
+        if cached:
+            logger.info(f"  Parse cache hit: "
+                        f"{announcement.get('announcementTitle', 'report')} "
+                        f"({cache_key})")
+            cached_analysis = self._analyze_from_cached_parse(
+                stock_code, year, report_type, announcement, cached
+            )
+            if cached_analysis is not None:
+                return cached_analysis
+            logger.warning("  Cache entry unusable; falling back to "
+                           "download + parse")
+
         url, filename = self.downloader.build_download_url(announcement)
         if not url:
             return None
@@ -1126,6 +1190,19 @@ class FinancialAnalysisPipeline:
                     report_type=report_type,
                     announcement=announcement
                 )
+
+            if (cache_key and self.parse_cache
+                    and not parse_result.get('error')
+                    and parse_result.get('text')):
+                try:
+                    self.parse_cache.put(
+                        cache_key,
+                        text=parse_result['text'],
+                        mda_text=parse_result['mda_text'],
+                        file_size_bytes=os.path.getsize(save_path),
+                    )
+                except OSError:
+                    pass
 
             # Step 4: Analyze
             text, text_source = self._select_analysis_text(parse_result)

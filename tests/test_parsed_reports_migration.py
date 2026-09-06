@@ -12,7 +12,7 @@ def test_parsed_reports_migration_locks_table_to_service_role():
     migration = MIGRATION_PATH.read_text(encoding="utf-8")
 
     assert "create table public.parsed_reports" in migration
-    assert "payload bytea not null" in migration
+    assert "payload text not null" in migration
     assert "alter table public.parsed_reports enable row level security" in migration
     assert (
         "revoke all on table public.parsed_reports from anon, authenticated"

@@ -4,6 +4,7 @@ Unit tests for src/parse_cache.py (disk layer + Supabase layer).
 
 from __future__ import annotations
 
+import base64
 import gzip
 import json
 import os
@@ -105,12 +106,21 @@ class _FakeClient:
         return _FakeQuery(self._rows, self.upserts)
 
 
-def test_supabase_store_loads_bytes_payload():
+def test_supabase_store_loads_base64_text_payload():
+    blob = _gzip_json({"text": "t"})
+    client = _FakeClient([{"payload": base64.b64encode(blob).decode("ascii")}])
+    store = SupabaseParsedReportStore(client)
+    assert store.load("k") == blob
+    store.store("k2", blob)
+    # upsert payload must be base64 text (PostgREST/JSON cannot carry bytes)
+    assert client.upserts[-1]["payload"] == base64.b64encode(blob).decode("ascii")
+    assert isinstance(client.upserts[-1]["payload"], str)
+
+
+def test_supabase_store_loads_raw_bytes_payload_defensively():
     blob = _gzip_json({"text": "t"})
     store = SupabaseParsedReportStore(_FakeClient([{"payload": blob}]))
     assert store.load("k") == blob
-    store.store("k2", blob)
-    # store() chains upsert().execute(); no exception means it worked.
 
 
 def test_supabase_store_empty_table_returns_none():

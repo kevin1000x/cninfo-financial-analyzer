@@ -6,7 +6,7 @@ import pytest
 import os
 import json
 import requests
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 from src.downloader import (
     CNINFODownloader,

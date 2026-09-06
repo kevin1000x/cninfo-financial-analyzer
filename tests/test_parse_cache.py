@@ -5,11 +5,7 @@ Unit tests for src/parse_cache.py (disk layer + Supabase layer).
 from __future__ import annotations
 
 import base64
-import gzip
-import json
 import os
-
-import pytest
 
 from src.parse_cache import (
     DiskParseCache,

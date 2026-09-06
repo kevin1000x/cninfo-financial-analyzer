@@ -1260,7 +1260,7 @@ class FinancialAnalysisPipeline:
             logger.warning("  Cached parse has no usable text")
             return None
 
-        analysis = self.analyzer.analyze_text(text, None)
+        analysis = self.analyzer.analyze_text(text)
         if cached.get('file_size_bytes'):
             analysis['file_size_bytes'] = cached['file_size_bytes']
 

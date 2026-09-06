@@ -10,11 +10,10 @@ file_size_bytes is restored from the cache entry.
 from __future__ import annotations
 
 import os
-
-import pytest
+import tempfile
 
 from src.parse_cache import DiskParseCache, ParseCache
-from src.pipeline import FinancialAnalysisPipeline
+from src.pipeline import FinancialAnalysisPipeline, StreamingManifest
 
 
 ANNOUNCEMENT = {
@@ -45,7 +44,7 @@ class FakeParser:
     def __init__(self):
         self.parse_calls = 0
 
-    def parse_pdf(self, pdf_path, save_output=True):
+    def parse_pdf(self, pdf_path, save_output=True, extract_tables=None):
         self.parse_calls += 1
         return {
             "pdf_path": pdf_path,
@@ -88,14 +87,19 @@ def _make_pipeline(tmp_path):
 
 
 def _run(pipeline):
-    return pipeline._process_single_report(
-        stock_code="600000",
-        year=2020,
-        report_type="annual",
-        announcement=ANNOUNCEMENT,
-        delete_pdf=True,
-        save_parsed_text=False,
-    )
+    # The cache tests don't assert on the ledger; each call gets a throwaway
+    # manifest to satisfy the "every caller owns a ledger" contract.
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest = StreamingManifest(os.path.join(tmp, "manifest.json"))
+        return pipeline._process_single_report(
+            stock_code="600000",
+            year=2020,
+            report_type="annual",
+            announcement=ANNOUNCEMENT,
+            delete_pdf=True,
+            save_parsed_text=False,
+            manifest=manifest,
+        )
 
 
 def test_second_run_skips_download_and_parse(tmp_path):

@@ -261,6 +261,47 @@ class CNINFODownloader:
     # Announcement query
     # ------------------------------------------------------------------
 
+    def _post_query_with_retry(self, params: Dict) -> Optional[Dict]:
+        """POST an announcement query, retrying transient failures.
+
+        CNINFO's query endpoint intermittently returns 502/503 or drops
+        connections; a bare failure used to silently drop that year's rows
+        (the loop below just breaks). Connection errors, timeouts and 5xx
+        are retried with exponential backoff; 4xx fails immediately.
+        Returns parsed JSON, or None when every attempt failed.
+        """
+        url_query = self.base_url + self.api_endpoint
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(self.retry_attempts):
+            try:
+                response = self.session.post(
+                    url_query, data=params, timeout=self.timeout, verify=False
+                )
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                status = getattr(e.response, 'status_code', 0)
+                if status < 500:
+                    raise  # client error: retrying won't help
+                last_exc = e
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as e:
+                last_exc = e
+
+            if attempt < self.retry_attempts - 1:
+                wait = 2 ** attempt
+                logger.warning(
+                    f"CNINFO query transient error "
+                    f"(attempt {attempt + 1}/{self.retry_attempts}), "
+                    f"retrying in {wait}s: {last_exc}"
+                )
+                time.sleep(wait)
+
+        logger.error(f"CNINFO query failed after "
+                     f"{self.retry_attempts} attempts: {last_exc}")
+        return None
+
     def query_announcements(self,
                             stock_code: str,
                             year: int,
@@ -314,10 +355,9 @@ class CNINFODownloader:
             }
 
             try:
-                url_query = self.base_url + self.api_endpoint
-                response = self.session.post(url_query, data=params, timeout=self.timeout, verify=False)
-                response.raise_for_status()
-                data = response.json()
+                data = self._post_query_with_retry(params)
+                if data is None:
+                    break
 
                 announcements = data.get('announcements', []) or []
                 if not announcements:

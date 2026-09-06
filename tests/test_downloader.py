@@ -6,6 +6,7 @@ import pytest
 import os
 import sys
 import json
+import requests
 from unittest.mock import Mock, patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -468,3 +469,112 @@ def test_playwright_download_with_login_returns_cookies():
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+# ==========================================================
+# query retry on transient CNINFO errors (502 etc.)
+# ==========================================================
+
+def _bare_downloader(config, tmp_path, retry_attempts=3):
+    dl = CNINFODownloader.__new__(CNINFODownloader)
+    dl.config = config['downloader']
+    dl.base_url = config['downloader']['base_url']
+    dl.api_endpoint = config['downloader']['api_endpoint']
+    dl.download_path = str(tmp_path)
+    dl.concurrent_downloads = 2
+    dl.rate_limit = 0.1
+    dl.retry_attempts = retry_attempts
+    dl.timeout = 10
+    dl.cookies = None
+    dl.org_id_cache_path = str(tmp_path / 'cache.json')
+    dl._org_id_map = {'000001': 'gssz0000001'}
+    dl.stats = {'total': 0, 'success': 0, 'failed': 0, 'skipped': 0}
+
+    import requests
+    dl.session = requests.Session()
+    dl.session.headers.update({'User-Agent': 'test'})
+    return dl
+
+
+def _query_response(announcements=1):
+    mock = Mock()
+    rows = [
+        {
+            'announcementTitle': f'2020年年度报告{i}',
+            'adjunctUrl': f'finalpage/2021-04-30/{i}.PDF',
+            'announcementTime': '2021-04-30'
+        }
+        for i in range(announcements)
+    ]
+    mock.json.return_value = {'announcements': rows, 'totalAnnouncement': announcements}
+    mock.raise_for_status = Mock()
+    return mock
+
+
+@patch.object(CNINFODownloader, '_load_org_id_map')
+def test_query_retries_on_connection_error_then_succeeds(
+        mock_load, config, tmp_path):
+    dl = _bare_downloader(config, tmp_path, retry_attempts=3)
+
+    responses = [
+        requests.exceptions.ConnectionError("boom"),
+        requests.exceptions.ConnectionError("boom again"),
+        _query_response(1),
+    ]
+
+    with patch.object(dl.session, 'post', side_effect=responses) as mock_post, \
+         patch('src.downloader.time.sleep') as mock_sleep:
+        results = dl.query_announcements('000001', 2020, 'annual')
+
+    assert mock_post.call_count == 3
+    assert mock_sleep.call_count == 2  # backoff between attempts
+    assert len(results) == 1
+    assert '年度报告' in results[0]['announcementTitle']
+
+
+@patch.object(CNINFODownloader, '_load_org_id_map')
+def test_query_retries_on_5xx_then_succeeds(mock_load, config, tmp_path):
+    import requests
+    dl = _bare_downloader(config, tmp_path, retry_attempts=3)
+
+    err = requests.exceptions.HTTPError()
+    err.response = Mock(status_code=502)
+    responses = [err, err, _query_response(1)]
+
+    with patch.object(dl.session, 'post', side_effect=responses) as mock_post, \
+         patch('src.downloader.time.sleep'):
+        results = dl.query_announcements('000001', 2020, 'annual')
+
+    assert mock_post.call_count == 3
+    assert len(results) == 1
+
+
+@patch.object(CNINFODownloader, '_load_org_id_map')
+def test_query_does_not_retry_on_4xx(mock_load, config, tmp_path):
+    import requests
+    dl = _bare_downloader(config, tmp_path, retry_attempts=3)
+
+    err = requests.exceptions.HTTPError()
+    err.response = Mock(status_code=400)
+    responses = [err]
+
+    with patch.object(dl.session, 'post', side_effect=responses) as mock_post, \
+         patch('src.downloader.time.sleep'):
+        # The pagination loop catches the raise and breaks with no results.
+        results = dl.query_announcements('000001', 2020, 'annual')
+
+    assert mock_post.call_count == 1
+    assert results == []
+
+
+@patch.object(CNINFODownloader, '_load_org_id_map')
+def test_query_gives_up_after_all_retries(mock_load, config, tmp_path):
+    dl = _bare_downloader(config, tmp_path, retry_attempts=3)
+
+    with patch.object(dl.session, 'post',
+                      side_effect=requests.exceptions.ConnectionError("down")), \
+         patch('src.downloader.time.sleep') as mock_sleep:
+        results = dl.query_announcements('000001', 2020, 'annual')
+
+    assert mock_sleep.call_count == 2
+    assert results == []

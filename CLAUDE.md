@@ -84,7 +84,7 @@ ALLOWED_REPORT_TYPES = {"annual", "semi_annual", "quarterly"}
   - `requirements-dev.txt` → extra `dev`. Its `-r requirements.txt` line is skipped by the parser on purpose, because extras are additive to `install_requires`.
 - Every spec carries a ceiling at the next major above the version this repo is verified against. A floor alone is how a routine `pip install -U` turns into a breaking change.
 - Lazy import is **not** the same as optional-to-install. `akshare` and `supabase` are imported inside functions but stay in `requirements.txt`, because the web UI can send `financial_data_source: "akshare"` and a default image must be able to serve that request.
-- `python_requires` is `>=3.11`, matching `mypy.ini`'s target and the `python:3.12-slim` image; `pandas>=3` and `numpy>=2.4` require 3.11 anyway. `find_packages()` is restricted to `src`/`api` because `tests/` has an `__init__.py` and used to ship as an importable top-level package.
+- `python_requires` is `>=3.11`; `mypy.ini` targets 3.12, the version CI and the `python:3.12-slim` image actually run (numpy's stubs use 3.12 `type` statements); `pandas>=3` and `numpy>=2.4` require 3.11 anyway. `find_packages()` is restricted to `src`/`api` because `tests/` has an `__init__.py` and used to ship as an importable top-level package.
 
 ### 12. `make check` is the gate, and CI runs it
 - `make lint` = `flake8 src/ api/ tests/` + `mypy --config-file mypy.ini src/ api/`. `api/` is in both deliberately: it was outside the lint and type-check targets while being the most-changed package in the repo.

@@ -15,7 +15,6 @@ from loguru import logger
 
 # Chinese NLP
 import jieba
-import jieba.posseg as pseg
 
 
 class TextAnalyzer:
@@ -147,8 +146,8 @@ class TextAnalyzer:
         words = [
             w for w in words
             if len(w) >= self.min_word_length
-               and w not in self.stopwords
-               and not w.isspace()
+            and w not in self.stopwords
+            and not w.isspace()
         ]
 
         return words
@@ -174,7 +173,9 @@ class TextAnalyzer:
 
         return pos_count, neg_count
 
-    def calculate_tone(self, text: str) -> Dict[str, float]:
+    def calculate_tone(self,
+                       text: str,
+                       words: Optional[List[str]] = None) -> Dict[str, float]:
         """
         Calculate Tone metric (sentiment score)
 
@@ -183,12 +184,14 @@ class TextAnalyzer:
 
         Args:
             text: Input text
+            words: Pre-segmented words, to avoid re-running jieba when the
+                caller needs several metrics from the same text
 
         Returns:
             Dictionary with tone metrics
         """
-        # Segment text
-        words = self.segment_text(text)
+        if words is None:
+            words = self.segment_text(text)
 
         # Count sentiment words
         pos_count, neg_count = self.count_sentiment_words(words)
@@ -262,7 +265,9 @@ class TextAnalyzer:
         # Words with more than 3 characters are considered complex
         return char_count > 3
 
-    def calculate_fog_index(self, text: str) -> Dict[str, float]:
+    def calculate_fog_index(self,
+                            text: str,
+                            words: Optional[List[str]] = None) -> Dict[str, float]:
         """
         Calculate Chinese-adapted Gunning-Fog Index
 
@@ -275,6 +280,8 @@ class TextAnalyzer:
 
         Args:
             text: Input text
+            words: Pre-segmented words, to avoid re-running jieba when the
+                caller needs several metrics from the same text
 
         Returns:
             Dictionary with readability metrics
@@ -293,8 +300,8 @@ class TextAnalyzer:
                 'sentence_count': 0
             }
 
-        # Segment all text
-        words = self.segment_text(text)
+        if words is None:
+            words = self.segment_text(text)
         total_words = len(words)
 
         # Count complex words
@@ -359,12 +366,16 @@ class TextAnalyzer:
         result = {}
 
         try:
+            # Segment once and share: both Tone and Fog consume the same word
+            # list, and jieba over a full MD&A section dominates analysis cost.
+            words = self.segment_text(text)
+
             # Calculate Tone
-            tone_metrics = self.calculate_tone(text)
+            tone_metrics = self.calculate_tone(text, words)
             result.update(tone_metrics)
 
             # Calculate Fog Index
-            fog_metrics = self.calculate_fog_index(text)
+            fog_metrics = self.calculate_fog_index(text, words)
             result.update(fog_metrics)
 
             # Alternative metrics

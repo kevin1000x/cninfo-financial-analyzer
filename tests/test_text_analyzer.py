@@ -5,15 +5,8 @@ Unit tests for TextAnalyzer module
 import pytest
 import os
 import tempfile
-from pathlib import Path
-
-# Import module to test
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.text_analyzer import TextAnalyzer, ChineseCommonVocabGenerator
-from src.utils import load_config
 
 
 @pytest.fixture
@@ -244,6 +237,44 @@ def test_batch_analyze(analyzer):
     assert results[0]['tone_raw'] > 0  # Positive
     assert results[1]['tone_raw'] < 0  # Negative
     assert results[2]['tone_raw'] == 0  # Neutral
+
+
+SEGMENT_SHARING_TEXT = """
+公司本年度经营情况良好，实现营业收入大幅增长，盈利能力持续优化提升。
+管理层认为，公司核心竞争力不断增强。
+然而，市场仍存在一定风险，需要持续关注。
+"""
+
+
+def test_analyze_text_segments_once(analyzer, monkeypatch):
+    """Tone and Fog must share a single jieba pass.
+
+    Segmentation dominates analysis cost, so segmenting twice per report
+    roughly doubled the time of every report in a batch."""
+    original = analyzer.segment_text
+    calls = []
+
+    def counting_segment(text):
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(analyzer, 'segment_text', counting_segment)
+
+    result = analyzer.analyze_text(SEGMENT_SHARING_TEXT)
+
+    assert len(calls) == 1
+    assert result['success'] is True
+    assert result['total_words'] > 0
+
+
+def test_precomputed_words_do_not_change_metrics(analyzer):
+    """Sharing the word list must be a pure performance change."""
+    words = analyzer.segment_text(SEGMENT_SHARING_TEXT)
+
+    assert (analyzer.calculate_tone(SEGMENT_SHARING_TEXT, words)
+            == analyzer.calculate_tone(SEGMENT_SHARING_TEXT))
+    assert (analyzer.calculate_fog_index(SEGMENT_SHARING_TEXT, words)
+            == analyzer.calculate_fog_index(SEGMENT_SHARING_TEXT))
 
 
 def test_common_vocab_generator():

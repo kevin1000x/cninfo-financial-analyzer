@@ -9,12 +9,13 @@ Usage:
 import os
 import sys
 import argparse
+import json
 import re
 import hashlib
 import shutil
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 from datetime import datetime
 from loguru import logger
 
@@ -36,6 +37,16 @@ from .metrics import MetricsCalculator, load_financial_data_from_csv
 
 DEFAULT_ANALYSIS_TEXT_MIN_CHARS = 500
 DEFAULT_ANALYSIS_TEXT_MIN_RATIO = 0.02
+
+# PDFParser.extract_mda_section ends in `return text` when no candidate
+# validates, so a failed extraction hands back the whole annual report as
+# `mda_text`. That sails past both bounds above — the ratio is exactly 1.0 —
+# and would then be scored and labelled as MD&A: a silent wrong answer, and
+# the only failure this pipeline cannot detect after the fact. Real MD&A
+# sections run well under half an A-share report even for short quarterly
+# filings, so 0.5 separates the fallback from a plausible section. Not
+# configurable on purpose: raising it re-enables the bug it guards against.
+MDA_FALLBACK_MAX_RATIO = 0.5
 
 
 def looks_like_toc_text(text: str) -> bool:
@@ -82,17 +93,95 @@ def select_analysis_text(parse_result: Dict,
         reject_reason = 'looks like table of contents'
     elif len(mda_text) < min_text_chars:
         reject_reason = f'too short ({len(mda_text)} chars)'
-    elif full_text and len(mda_text) / max(len(full_text), 1) < min_mda_ratio:
-        reject_reason = (
-            f'too small relative to full text '
-            f'({len(mda_text) / max(len(full_text), 1):.3%})'
-        )
+    elif full_text:
+        mda_ratio = len(mda_text) / len(full_text)
+        if mda_ratio < min_mda_ratio:
+            reject_reason = f'too small relative to full text ({mda_ratio:.3%})'
+        elif mda_ratio > MDA_FALLBACK_MAX_RATIO:
+            reject_reason = (
+                f'covers {mda_ratio:.3%} of full text, so it is the parser '
+                f'whole-document fallback rather than an MD&A section'
+            )
 
     if reject_reason and full_text:
         logger.warning(f"MD&A text rejected for analysis: {reject_reason}; using full text")
         return full_text, 'full_text'
 
     return mda_text or full_text, 'mda_text' if mda_text else 'full_text'
+
+
+class StreamingManifest:
+    """
+    Durable per-task ledger for a streaming run.
+
+    Results otherwise live only in memory until the last report is done, so a
+    crash, a cancel or the job watchdog loses the failure reasons along with
+    the work. Every task lands in exactly one status —
+    ``ok``, ``no_announcements``, ``query_error``, ``no_url``,
+    ``download_failed``, ``no_text``, ``process_error`` — so the tally is the
+    run's failure distribution and a rerun with ``resume=True`` skips only the
+    tasks that actually succeeded.
+
+    Mirrors the manifest in scripts/readability_vs_performance.py.
+    """
+
+    def __init__(self, path: str, resume: bool = False):
+        self.path = path
+        self.entries: Dict[str, Dict] = {}
+        if resume and os.path.exists(path):
+            self.entries = json.loads(Path(path).read_text(encoding='utf-8'))
+            done = sum(1 for e in self.entries.values() if e.get('status') == 'ok')
+            logger.info(f"Resuming streaming run from {path}: {done} tasks already ok")
+
+    @staticmethod
+    def task_key(stock_code: str, year: int, report_type: str) -> str:
+        return f"{stock_code}/{year}/{report_type}"
+
+    def is_done(self, key: str) -> bool:
+        return self.entries.get(key, {}).get('status') == 'ok'
+
+    def completed_results(self, keys: Iterable[str]) -> List[Dict]:
+        """
+        Results for tasks an earlier run already finished.
+
+        Seeding these is what makes resume correct: without them the exported
+        summary would cover only the reports this run re-processed.
+        """
+        results = []
+        for key in keys:
+            entry = self.entries.get(key, {})
+            if entry.get('status') == 'ok' and entry.get('result'):
+                results.append(entry['result'])
+        return results
+
+    def record(self, key: str, status: str, **fields) -> None:
+        """
+        Record one task's outcome and persist immediately.
+
+        Written per task rather than in batches: each task costs a download and
+        a parse, so a kilobyte of JSON is noise next to it, and a cancelled
+        worker is SIGTERMed without unwinding any batch counter. The rename
+        keeps a kill mid-write from leaving a manifest no later run can parse.
+        """
+        entry = {'status': status}
+        entry.update(fields)
+        self.entries[key] = entry
+
+        target = Path(self.path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staged = target.with_name(target.name + '.tmp')
+        staged.write_text(
+            json.dumps(self.entries, ensure_ascii=False, indent=1),
+            encoding='utf-8'
+        )
+        staged.replace(target)
+
+    def tally(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for entry in self.entries.values():
+            status = entry.get('status', 'unknown')
+            counts[status] = counts.get(status, 0) + 1
+        return counts
 
 
 class FinancialAnalysisPipeline:
@@ -162,7 +251,13 @@ class FinancialAnalysisPipeline:
             'audit_output_path',
             os.path.join(self.parser.output_path, 'streaming_audit')
         )
-        self.streaming_max_audit_reports = stream_config.get('max_audit_reports', 10)
+        self.streaming_max_audit_reports = stream_config.get('max_audit_reports')
+        # `or`, not a .get default: config.yaml ships manifest_path: null, and
+        # an explicit None would otherwise win over the fallback.
+        self.streaming_manifest_path = stream_config.get('manifest_path') or os.path.join(
+            output_config.get('results_path', 'data/results'),
+            'streaming_manifest.json'
+        )
         Path(self.intermediate_output_path).mkdir(parents=True, exist_ok=True)
         Path(self.streaming_audit_output_path).mkdir(parents=True, exist_ok=True)
 
@@ -514,6 +609,8 @@ class FinancialAnalysisPipeline:
     def _enforce_streaming_audit_retention(self) -> None:
         """
         Keep only the most recent N streaming audit directories.
+
+        Invoked by run_streaming once the run has exported its results.
         """
         max_keep = self.streaming_max_audit_reports
         if max_keep is None:
@@ -545,7 +642,10 @@ class FinancialAnalysisPipeline:
                                             announcement: Dict) -> Dict:
         """
         Move streaming parsed artifacts from the temporary parser path into
-        a dedicated audit directory, then enforce capped retention.
+        a dedicated audit directory. Retention is applied by run_streaming
+        once the whole run is done, not here: pruning per report would delete
+        the audit text of earlier reports while the run is still exporting
+        their `text_path`.
         """
         output_dir = parse_result.get('output_dir', '')
         if not output_dir or not os.path.exists(output_dir):
@@ -571,7 +671,6 @@ class FinancialAnalysisPipeline:
         updated['text_path'] = str(text_path) if text_path.exists() else ''
         updated['mda_path'] = str(mda_path) if mda_path.exists() else ''
 
-        self._enforce_streaming_audit_retention()
         return updated
 
     def finish_work(self,
@@ -849,11 +948,11 @@ class FinancialAnalysisPipeline:
         return final_path
 
     def run(self,
-            company_codes: List[str] = None,
-            company_csv: str = None,
-            years: List[int] = None,
-            report_types: List[str] = None,
-            financial_data_csv: str = None,
+            company_codes: Optional[List[str]] = None,
+            company_csv: Optional[str] = None,
+            years: Optional[List[int]] = None,
+            report_types: Optional[List[str]] = None,
+            financial_data_csv: Optional[str] = None,
             skip_download: bool = False,
             skip_parse: bool = False,
             skip_analyze: bool = False,
@@ -895,6 +994,7 @@ class FinancialAnalysisPipeline:
         if report_types is None:
             report_types = ['annual']
 
+        parsed_this_run = False
         if restore_analysis_results:
             logger.info("Restoring analysis_results intermediate")
             analysis_results = self.load_intermediate_frame(
@@ -920,6 +1020,7 @@ class FinancialAnalysisPipeline:
                 # Phase 2: Parse
                 if not skip_parse:
                     parse_results = self.parse_phase(metadata)
+                    parsed_this_run = True
                 else:
                     logger.info("Skipping parse phase")
                     parse_results = self._load_parsed_results(metadata)
@@ -944,6 +1045,13 @@ class FinancialAnalysisPipeline:
         # Phase 5: Save
         output_file = self.save_results(final_results)
 
+        # Retention runs after the export, and only for a run that parsed:
+        # pruning per report would delete parsed output that --skip-parse still
+        # needs and leave the summary's text_path column pointing at
+        # directories that no longer exist.
+        if parsed_this_run:
+            self.parser.enforce_output_retention()
+
         # Log completion
         elapsed = datetime.now() - start_time
         logger.info("=" * 60)
@@ -958,26 +1066,31 @@ class FinancialAnalysisPipeline:
     # ------------------------------------------------------------------
 
     def run_streaming(self,
-                      company_codes: List[str] = None,
-                      company_csv: str = None,
-                      years: List[int] = None,
-                      report_types: List[str] = None,
-                      financial_data_csv: str = None,
+                      company_codes: Optional[List[str]] = None,
+                      company_csv: Optional[str] = None,
+                      years: Optional[List[int]] = None,
+                      report_types: Optional[List[str]] = None,
+                      financial_data_csv: Optional[str] = None,
                       delete_pdf: bool = True,
-                      save_parsed_text: bool = True) -> pd.DataFrame:
+                      save_parsed_text: bool = True,
+                      resume: bool = False) -> pd.DataFrame:
         """
         Run the pipeline in streaming mode: process one PDF at a time.
 
         For each (company, year, report_type):
           1. Query announcement list from CNINFO API
           2. Download PDF to a temporary path
-          3. Parse PDF (extract text & tables)
+          3. Parse PDF (extract text, tables skipped)
           4. Analyze text (Tone & Fog)
           5. Append results to accumulator
           6. Delete PDF (keep parsed text if configured)
           7. Rate-limit wait, then next
 
         This ensures only ~1 PDF exists on disk at any moment.
+
+        Every task also lands in the streaming manifest, written as the run
+        progresses so a crash, a cancel or the watchdog timeout leaves behind
+        a ledger saying what finished and why the rest did not.
 
         Args:
             company_codes: List of stock codes (or use company_csv)
@@ -987,6 +1100,9 @@ class FinancialAnalysisPipeline:
             financial_data_csv: Path to financial data CSV
             delete_pdf: Delete PDF after analysis (default True)
             save_parsed_text: Save parsed text files (default True)
+            resume: Reuse tasks an earlier run recorded as ok, and start from
+                its results. Off by default so a resubmitted web job is a fresh
+                run rather than a no-op against a stale ledger.
 
         Returns:
             Final results DataFrame
@@ -1016,11 +1132,24 @@ class FinancialAnalysisPipeline:
         if save_parsed_text is None:
             save_parsed_text = stream_config.get('save_parsed_text', True)
 
-        # Accumulate analysis results
-        all_results: List[Dict] = []
+        manifest = StreamingManifest(self.streaming_manifest_path, resume=resume)
 
-        total_tasks = len(company_codes) * len(years) * len(report_types)
+        planned_keys = [
+            StreamingManifest.task_key(code, year, report_type)
+            for code in company_codes
+            for year in years
+            for report_type in report_types
+        ]
+
+        # Accumulate analysis results, seeded with whatever a resumed run
+        # already finished so the export covers every requested task.
+        all_results: List[Dict] = manifest.completed_results(planned_keys) if resume else []
+        if all_results:
+            logger.info(f"Resumed {len(all_results)} completed reports from manifest")
+
+        total_tasks = len(planned_keys)
         processed = 0
+        skipped = 0
 
         logger.info(f"Streaming: {len(company_codes)} companies × "
                     f"{len(years)} years × {len(report_types)} types = "
@@ -1030,17 +1159,33 @@ class FinancialAnalysisPipeline:
             for year in years:
                 for report_type in report_types:
                     processed += 1
+                    key = StreamingManifest.task_key(stock_code, year, report_type)
                     logger.info(f"[{processed}/{total_tasks}] "
                                 f"{stock_code} / {year} / {report_type}")
 
+                    if manifest.is_done(key):
+                        skipped += 1
+                        logger.info("  Already ok in manifest, skipping")
+                        continue
+
                     # Step 1: Query announcements
-                    announcements = self.downloader.query_announcements(
-                        stock_code, year, report_type
-                    )
+                    try:
+                        announcements = self.downloader.query_announcements(
+                            stock_code, year, report_type
+                        )
+                    except Exception as e:
+                        # The remaining tasks are independent, so one bad query
+                        # must not end the run — and the manifest is the only
+                        # place the reason outlives the process.
+                        logger.error(f"  Announcement query failed: {e}")
+                        manifest.record(key, 'query_error',
+                                        error=f"{type(e).__name__}: {e}")
+                        continue
 
                     if not announcements:
                         logger.warning(f"No announcements found for "
                                        f"{stock_code} ({year} {report_type})")
+                        manifest.record(key, 'no_announcements')
                         continue
 
                     # Process first matching announcement (the main report)
@@ -1053,9 +1198,15 @@ class FinancialAnalysisPipeline:
                             announcement=announcement,
                             delete_pdf=delete_pdf,
                             save_parsed_text=save_parsed_text,
+                            manifest=manifest,
                         )
                         if result:
                             all_results.append(result)
+
+        logger.info(f"Streaming task tally: {manifest.tally()}")
+        logger.info(f"Manifest: {self.streaming_manifest_path}")
+        if skipped:
+            logger.info(f"Skipped {skipped} tasks completed by an earlier run")
 
         # Build DataFrame
         analysis_df = pd.DataFrame(all_results)
@@ -1074,6 +1225,11 @@ class FinancialAnalysisPipeline:
 
         # Save results
         output_file = self.save_results(final_results)
+
+        # Retention runs after the export: pruning per report would leave the
+        # summary's text_path column pointing at audit directories that no
+        # longer exist for any batch larger than the cap.
+        self._enforce_streaming_audit_retention()
 
         elapsed = datetime.now() - start_time
         logger.info("=" * 60)
@@ -1130,7 +1286,8 @@ class FinancialAnalysisPipeline:
                                report_type: str,
                                announcement: Dict,
                                delete_pdf: bool,
-                               save_parsed_text: bool) -> Optional[Dict]:
+                               save_parsed_text: bool,
+                               manifest: StreamingManifest) -> Optional[Dict]:
         """
         Process a single report: download → parse → analyze → cleanup.
 
@@ -1141,10 +1298,13 @@ class FinancialAnalysisPipeline:
             announcement: Announcement dict from CNINFO API
             delete_pdf: Whether to delete PDF after processing
             save_parsed_text: Whether to save parsed text files
+            manifest: Ledger this report's outcome is recorded in
 
         Returns:
-            Analysis result dict, or None on failure
+            Analysis result dict, or None on failure. Either way the manifest
+            says which happened and why.
         """
+        key = StreamingManifest.task_key(stock_code, year, report_type)
         cache_key = cache_key_for_announcement(announcement)
         cached = self.parse_cache.get(cache_key) if self.parse_cache and cache_key else None
         if cached:
@@ -1155,12 +1315,18 @@ class FinancialAnalysisPipeline:
                 stock_code, year, report_type, announcement, cached
             )
             if cached_analysis is not None:
+                # A cache hit is a completed task: record it, or a resumed
+                # run would reprocess it and the tally would miss it.
+                manifest.record(key, 'ok', result=cached_analysis)
                 return cached_analysis
             logger.warning("  Cache entry unusable; falling back to "
                            "download + parse")
 
         url, filename = self.downloader.build_download_url(announcement)
         if not url:
+            logger.error(f"  No downloadable URL in announcement for {key}")
+            manifest.record(key, 'no_url',
+                            announcement_title=announcement.get('announcementTitle', ''))
             return None
 
         # Temporary download path
@@ -1174,13 +1340,18 @@ class FinancialAnalysisPipeline:
             success = self.downloader.download_one_sync(url, save_path)
             if not success:
                 logger.error(f"  Download failed: {url}")
+                manifest.record(key, 'download_failed', url=url)
                 return None
 
             # Step 3: Parse
             logger.info(f"  Parsing: {filename}")
+            # Tables off: select_analysis_text only reads text/mda_text, so the
+            # table engine would burn most of the parse time and write CSVs into
+            # the audit dir that nothing ever reads.
             parse_result = self.parser.parse_pdf(
                 save_path,
-                save_output=save_parsed_text
+                save_output=save_parsed_text,
+                extract_tables=False
             )
             if save_parsed_text:
                 parse_result = self._relocate_streaming_audit_artifacts(
@@ -1208,6 +1379,7 @@ class FinancialAnalysisPipeline:
             text, text_source = self._select_analysis_text(parse_result)
             if not text:
                 logger.warning(f"  No text extracted from {filename}")
+                manifest.record(key, 'no_text', analysis_text_source=text_source)
                 return None
 
             logger.info(f"  Analyzing: {len(text)} characters")
@@ -1229,10 +1401,16 @@ class FinancialAnalysisPipeline:
             logger.info(f"  Done: Tone={analysis.get('tone_raw', 0):.4f}, "
                         f"Fog={analysis.get('fog_index', 0):.2f}")
 
+            # The whole analysis dict, not just a status: this is what lets a
+            # resumed run export a complete summary without re-downloading.
+            manifest.record(key, 'ok', result=analysis)
+
             return analysis
 
         except Exception as e:
             logger.error(f"  Failed to process {filename}: {e}")
+            manifest.record(key, 'process_error',
+                            error=f"{type(e).__name__}: {e}")
             return None
 
         finally:
@@ -1289,6 +1467,9 @@ def main():
                                      'saves disk space)')
     analyze_parser.add_argument('--keep-pdf', action='store_true',
                                 help='Keep PDF files after analysis (streaming mode only)')
+    analyze_parser.add_argument('--resume', action='store_true',
+                                help='Skip streaming tasks the manifest already records as ok '
+                                     '(streaming mode only)')
     analyze_parser.add_argument('--config', default='config.yaml', help='Config file path')
     analyze_parser.add_argument('--sentiment-dict',
                                 default=None,
@@ -1354,6 +1535,7 @@ def main():
                 report_types=report_types,
                 financial_data_csv=args.financial_data,
                 delete_pdf=not getattr(args, 'keep_pdf', False),
+                resume=getattr(args, 'resume', False),
             )
         else:
             results = pipeline.run(

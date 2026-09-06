@@ -2,6 +2,7 @@
 Unit tests for pipeline output-quality safeguards.
 """
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,11 @@ import pandas as pd
 import pytest
 from openpyxl import load_workbook
 
-from src.pipeline import FinancialAnalysisPipeline, select_analysis_text
+from src.pipeline import (
+    FinancialAnalysisPipeline,
+    StreamingManifest,
+    select_analysis_text,
+)
 
 
 class StubAnalyzer:
@@ -49,6 +54,9 @@ class StubStreamingDownloader:
     def build_download_url(self, announcement):
         return 'https://example.com/report.pdf', announcement.get('filename', 'report.pdf')
 
+    def query_announcements(self, stock_code, year, report_type):
+        return [_streaming_announcement(len(self.downloaded_paths))]
+
     def download_one_sync(self, url, save_path):
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         Path(save_path).write_bytes(b'%PDF-1.4\n% streaming test placeholder\n')
@@ -63,8 +71,8 @@ class StubStreamingParser:
         self.result_factory = result_factory
         self.calls = []
 
-    def parse_pdf(self, pdf_path, save_output=True):
-        self.calls.append((pdf_path, save_output))
+    def parse_pdf(self, pdf_path, save_output=True, extract_tables=None):
+        self.calls.append((pdf_path, save_output, extract_tables))
         return self.result_factory(pdf_path, save_output)
 
 
@@ -98,13 +106,20 @@ def pipeline_stub(tmp_path):
     pipeline.max_saved_intermediates = 5
     pipeline.streaming_audit_output_path = str(tmp_path / 'streaming_audit')
     pipeline.streaming_max_audit_reports = 10
+    pipeline.streaming_manifest_path = str(tmp_path / 'streaming_manifest.json')
     pipeline.company_map = {}
     return pipeline
 
 
+@pytest.fixture
+def manifest(tmp_path):
+    """Fresh ledger for tests that drive _process_single_report directly."""
+    return StreamingManifest(str(tmp_path / 'manifest.json'))
+
+
 def _good_streaming_texts():
     mda_text = "第三章 管理层讨论与分析\n" + ("经营情况良好，营业收入持续增长。" * 100)
-    full_text = mda_text + "\n" + ("这是完整报告正文。" * 200)
+    full_text = mda_text + "\n" + ("这是完整报告正文。" * 600)
     return full_text, mda_text
 
 
@@ -142,10 +157,45 @@ def test_analyze_phase_falls_back_to_full_text_for_bad_mda(pipeline_stub):
     assert results.iloc[0]['download_date'] == '2024-03-15'
 
 
+def test_analyze_phase_labels_parser_whole_document_fallback_as_full_text(
+        pipeline_stub, tmp_path):
+    """Cross-module guard: PDFParser.extract_mda_section returns the entire
+    document when no candidate validates, and analyze_phase must not export
+    that under the mda_text label."""
+    from src.pdf_parser import PDFParser
+
+    report_text = (
+        "目 录\n"
+        "第三章 管理层讨论与分析 ................................ 22\n"
+        "第四章 公司治理 ......................................... 62\n"
+    ) + ("本年度公司经营状况说明。" * 300)
+
+    parser = PDFParser({'parser': {'output_path': str(tmp_path)}})
+    mda_text = parser.extract_mda_section(report_text)
+    assert mda_text == report_text, "fixture must exercise the parser fallback"
+
+    results = pipeline_stub.analyze_phase(pd.DataFrame([
+        {
+            'stock_code': '000001',
+            'company_name': '平安银行',
+            'year': 2023,
+            'report_type': 'annual',
+            'file_path': 'data/raw/report.pdf',
+            'text_path': 'data/parsed/full_text.txt',
+            'download_date': 1710432000000,
+            'text': report_text,
+            'mda_text': mda_text,
+        }
+    ]))
+
+    assert results.iloc[0]['analysis_text_source'] == 'full_text'
+    assert pipeline_stub.analyzer.calls[0][0] == report_text
+
+
 def test_select_analysis_text_uses_valid_mda_text():
     """Reusable text selector should prefer valid MD&A content."""
-    full_text = "第一章 公司情况\n" + ("其他正文。" * 300)
     mda_text = "第三章 管理层讨论与分析\n" + ("经营情况良好，收入持续增长。" * 80)
+    full_text = "第一章 公司情况\n" + ("其他正文。" * 600) + "\n" + mda_text
 
     text, source = select_analysis_text({
         'text': full_text,
@@ -154,6 +204,40 @@ def test_select_analysis_text_uses_valid_mda_text():
 
     assert text == mda_text
     assert source == 'mda_text'
+
+
+def test_select_analysis_text_rejects_whole_document_fallback():
+    """extract_mda_section returns the entire document when no candidate
+    validates; that must never be scored or labelled as MD&A."""
+    full_text = "第三章 管理层讨论与分析\n" + ("这是完整正文内容。" * 500)
+    parse_result = {'text': full_text, 'mda_text': full_text}
+
+    text, source = select_analysis_text(parse_result)
+
+    assert source == 'full_text'
+    assert text == full_text
+
+
+def test_select_analysis_text_rejects_near_total_mda_slice():
+    """A slice covering almost the whole report is the fallback, not a section."""
+    body = "这是完整正文内容。" * 500
+    mda_text = body[: int(len(body) * 0.9)]
+
+    text, source = select_analysis_text({'text': body, 'mda_text': mda_text})
+
+    assert source == 'full_text'
+    assert text == body
+
+
+def test_select_analysis_text_keeps_large_but_plausible_mda():
+    """The upper guard must not reject a genuine MD&A from a short report."""
+    mda_text = "第三章 管理层讨论与分析\n" + ("经营情况良好，收入持续增长。" * 100)
+    full_text = mda_text + "\n" + ("其他正文。" * 600)
+
+    text, source = select_analysis_text({'text': full_text, 'mda_text': mda_text})
+
+    assert source == 'mda_text'
+    assert text == mda_text
 
 
 def test_select_analysis_text_falls_back_for_toc_mda():
@@ -259,7 +343,7 @@ def test_save_results_writes_schema_for_empty_dataframe(pipeline_stub, monkeypat
 
 
 def test_streaming_audit_retention_keeps_latest_dirs(pipeline_stub, tmp_path):
-    """Streaming audit artifacts should be capped to the configured retention size."""
+    """The audit cap is an end-of-run step: relocating reports never prunes."""
     pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
     pipeline_stub.streaming_max_audit_reports = 2
 
@@ -296,6 +380,11 @@ def test_streaming_audit_retention_keeps_latest_dirs(pipeline_stub, tmp_path):
             middle_dir = Path(relocated['output_dir'])
             os.utime(middle_dir, (2, 2))
 
+    assert all(Path(item['output_dir']).exists() for item in results), \
+        "relocating a report must not prune earlier ones"
+
+    pipeline_stub._enforce_streaming_audit_retention()
+
     audit_dirs = sorted(
         path.name for path in Path(pipeline_stub.streaming_audit_output_path).iterdir()
         if path.is_dir()
@@ -307,7 +396,7 @@ def test_streaming_audit_retention_keeps_latest_dirs(pipeline_stub, tmp_path):
     assert Path(results[2]['output_dir']).exists()
 
 
-def test_streaming_save_parsed_text_false_leaves_no_audit_dir(pipeline_stub, tmp_path):
+def test_streaming_save_parsed_text_false_leaves_no_audit_dir(pipeline_stub, tmp_path, manifest):
     """Without parsed-text persistence, streaming should not leave audit artifacts."""
     pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
     pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
@@ -330,6 +419,7 @@ def test_streaming_save_parsed_text_false_leaves_no_audit_dir(pipeline_stub, tmp
         announcement=_streaming_announcement(),
         delete_pdf=True,
         save_parsed_text=False,
+        manifest=manifest,
     )
 
     assert result is not None
@@ -341,7 +431,40 @@ def test_streaming_save_parsed_text_false_leaves_no_audit_dir(pipeline_stub, tmp
     assert not Path(pipeline_stub.downloader.downloaded_paths[0]).exists()
 
 
-def test_streaming_raw_text_disabled_keeps_audit_dir_without_txt(pipeline_stub, tmp_path):
+def test_streaming_skips_table_extraction(pipeline_stub, tmp_path, manifest):
+    """Streaming analysis never reads tables, so it must not pay to extract them.
+
+    select_analysis_text only consumes text/mda_text; the table engine was
+    most of the per-report parse time and its CSVs went unread."""
+    pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
+    pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
+    full_text, mda_text = _good_streaming_texts()
+
+    pipeline_stub.parser = StubStreamingParser(
+        lambda _pdf_path, _save_output: {
+            'text': full_text,
+            'mda_text': mda_text,
+            'text_path': '',
+            'mda_path': '',
+            'output_dir': '',
+        }
+    )
+
+    result = pipeline_stub._process_single_report(
+        stock_code='000001',
+        year=2023,
+        report_type='annual',
+        announcement=_streaming_announcement(),
+        delete_pdf=True,
+        save_parsed_text=False,
+        manifest=manifest,
+    )
+
+    assert result is not None
+    assert pipeline_stub.parser.calls[0][2] is False
+
+
+def test_streaming_raw_text_disabled_keeps_audit_dir_without_txt(pipeline_stub, tmp_path, manifest):
     """If parser saves an audit directory without raw text, relocation should preserve that."""
     pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
     pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
@@ -368,6 +491,7 @@ def test_streaming_raw_text_disabled_keeps_audit_dir_without_txt(pipeline_stub, 
         announcement=_streaming_announcement(),
         delete_pdf=True,
         save_parsed_text=True,
+        manifest=manifest,
     )
 
     audit_dirs = [path for path in Path(pipeline_stub.streaming_audit_output_path).iterdir()]
@@ -382,7 +506,7 @@ def test_streaming_raw_text_disabled_keeps_audit_dir_without_txt(pipeline_stub, 
     assert result['text_path'] == ''
 
 
-def test_streaming_structured_tables_disabled_leaves_no_csv(pipeline_stub, tmp_path):
+def test_streaming_structured_tables_disabled_leaves_no_csv(pipeline_stub, tmp_path, manifest):
     """When parser does not save structured tables, streaming audit should not invent CSVs."""
     pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
     pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
@@ -410,6 +534,7 @@ def test_streaming_structured_tables_disabled_leaves_no_csv(pipeline_stub, tmp_p
         announcement=_streaming_announcement(),
         delete_pdf=True,
         save_parsed_text=True,
+        manifest=manifest,
     )
 
     audit_dirs = [path for path in Path(pipeline_stub.streaming_audit_output_path).iterdir()]
@@ -419,8 +544,10 @@ def test_streaming_structured_tables_disabled_leaves_no_csv(pipeline_stub, tmp_p
     assert Path(result['text_path']).exists()
 
 
-def test_streaming_retention_still_applies_from_single_report_path(pipeline_stub, tmp_path):
-    """Retention should still cap audit dirs when processing reports one by one."""
+def test_streaming_retention_applies_after_export_not_per_report(pipeline_stub, tmp_path, monkeypatch):
+    """The audit cap must not run mid-batch. Pruning per report deleted earlier
+    audit text while the run was still exporting its text_path, so any batch
+    larger than the cap shipped a summary pointing at missing directories."""
     pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
     pipeline_stub.streaming_max_audit_reports = 2
     pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
@@ -443,32 +570,36 @@ def test_streaming_retention_still_applies_from_single_report_path(pipeline_stub
         }
 
     pipeline_stub.parser = StubStreamingParser(parse_result)
-    outputs = []
-    for idx in range(3):
-        result = pipeline_stub._process_single_report(
-            stock_code=f'{idx + 1:06d}',
-            year=2023,
-            report_type='annual',
-            announcement=_streaming_announcement(idx),
-            delete_pdf=True,
-            save_parsed_text=True,
-        )
-        outputs.append(result)
-        if idx == 0:
-            os.utime(outputs[0]['text_path'], (1, 1))
-            os.utime(Path(outputs[0]['text_path']).parent, (1, 1))
-        elif idx == 1:
-            os.utime(outputs[1]['text_path'], (2, 2))
-            os.utime(Path(outputs[1]['text_path']).parent, (2, 2))
+    monkeypatch.setattr('src.pipeline.create_timestamp', lambda: '20240101_120000')
+
+    exported_text_paths = []
+    dangling_at_export = []
+    save_results = pipeline_stub.save_results
+
+    def spy_save_results(df):
+        paths = df['text_path'].tolist()
+        exported_text_paths.extend(paths)
+        dangling_at_export.extend(p for p in paths if not Path(p).exists())
+        return save_results(df)
+
+    monkeypatch.setattr(pipeline_stub, 'save_results', spy_save_results)
+
+    results = pipeline_stub.run_streaming(
+        company_codes=['000001', '000002', '000003'],
+        years=[2023],
+        report_types=['annual'],
+    )
+
+    assert len(results) == 3
+    assert len(exported_text_paths) == 3
+    assert dangling_at_export == [], \
+        f"every exported text_path must resolve at export time: {dangling_at_export}"
 
     audit_dirs = [path for path in Path(pipeline_stub.streaming_audit_output_path).iterdir()]
-    assert len(audit_dirs) == 2
-    assert not Path(outputs[0]['text_path']).parent.exists()
-    assert Path(outputs[1]['text_path']).parent.exists()
-    assert Path(outputs[2]['text_path']).parent.exists()
+    assert len(audit_dirs) == 2, "the cap still applies once the run is done"
 
 
-def test_streaming_keep_pdf_preserves_file_path_and_pdf(pipeline_stub, tmp_path):
+def test_streaming_keep_pdf_preserves_file_path_and_pdf(pipeline_stub, tmp_path, manifest):
     """delete_pdf=False should keep the PDF path in results and leave the file on disk."""
     pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
     pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
@@ -490,11 +621,280 @@ def test_streaming_keep_pdf_preserves_file_path_and_pdf(pipeline_stub, tmp_path)
         announcement=_streaming_announcement(),
         delete_pdf=False,
         save_parsed_text=False,
+        manifest=manifest,
     )
 
     assert result is not None
     assert result['file_path'] == pipeline_stub.downloader.downloaded_paths[0]
     assert Path(result['file_path']).exists()
+
+
+def _read_manifest(path):
+    return json.loads(Path(path).read_text(encoding='utf-8'))
+
+
+def _stub_streaming_success(pipeline_stub, tmp_path):
+    """Wire the stubs for a streaming run where every report parses cleanly."""
+    pipeline_stub.streaming_audit_output_path = str(tmp_path / 'audit_root')
+    pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
+    full_text, mda_text = _good_streaming_texts()
+    pipeline_stub.parser = StubStreamingParser(
+        lambda _pdf_path, _save_output: {
+            'text': full_text,
+            'mda_text': mda_text,
+            'text_path': '',
+            'mda_path': '',
+            'output_dir': '',
+        }
+    )
+
+
+def test_process_single_report_records_download_failure(pipeline_stub, tmp_path, manifest):
+    """A failed download must be attributable from the ledger, not only from a
+    log line a long run has already scrolled past."""
+    pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
+    pipeline_stub.downloader.download_one_sync = lambda url, save_path: False
+    pipeline_stub.parser = StubStreamingParser(lambda _p, _s: {})
+
+    result = pipeline_stub._process_single_report(
+        stock_code='000001',
+        year=2023,
+        report_type='annual',
+        announcement=_streaming_announcement(),
+        delete_pdf=True,
+        save_parsed_text=False,
+        manifest=manifest,
+    )
+
+    key = StreamingManifest.task_key('000001', 2023, 'annual')
+    assert result is None
+    assert manifest.entries[key]['status'] == 'download_failed'
+    assert _read_manifest(manifest.path)[key]['status'] == 'download_failed'
+
+
+def test_process_single_report_records_empty_text(pipeline_stub, tmp_path, manifest):
+    """A PDF that yields no usable text is a distinct failure from a download
+    that never landed, and the two need different fixes."""
+    pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
+    pipeline_stub.parser = StubStreamingParser(
+        lambda _p, _s: {'text': '', 'mda_text': '', 'text_path': '',
+                        'mda_path': '', 'output_dir': ''}
+    )
+
+    result = pipeline_stub._process_single_report(
+        stock_code='000001',
+        year=2023,
+        report_type='annual',
+        announcement=_streaming_announcement(),
+        delete_pdf=True,
+        save_parsed_text=False,
+        manifest=manifest,
+    )
+
+    key = StreamingManifest.task_key('000001', 2023, 'annual')
+    assert result is None
+    assert manifest.entries[key]['status'] == 'no_text'
+
+
+def test_process_single_report_records_unusable_announcement(pipeline_stub, tmp_path, manifest):
+    """An announcement with no downloadable URL used to return None silently."""
+    pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
+    pipeline_stub.downloader.build_download_url = lambda announcement: ('', '')
+    pipeline_stub.parser = StubStreamingParser(lambda _p, _s: {})
+
+    result = pipeline_stub._process_single_report(
+        stock_code='000001',
+        year=2023,
+        report_type='annual',
+        announcement=_streaming_announcement(),
+        delete_pdf=True,
+        save_parsed_text=False,
+        manifest=manifest,
+    )
+
+    key = StreamingManifest.task_key('000001', 2023, 'annual')
+    assert result is None
+    assert manifest.entries[key]['status'] == 'no_url'
+    assert manifest.entries[key]['announcement_title'] == '2023年年度报告_0'
+
+
+def test_process_single_report_records_exception_with_reason(pipeline_stub, tmp_path, manifest):
+    """The ledger carries the exception type and message, so a failure can be
+    diagnosed without reproducing the run."""
+    pipeline_stub.downloader = StubStreamingDownloader(tmp_path / 'downloads')
+
+    def exploding_parse(_pdf_path, _save_output):
+        raise RuntimeError('pdfplumber could not open the file')
+
+    pipeline_stub.parser = StubStreamingParser(exploding_parse)
+
+    result = pipeline_stub._process_single_report(
+        stock_code='000001',
+        year=2023,
+        report_type='annual',
+        announcement=_streaming_announcement(),
+        delete_pdf=True,
+        save_parsed_text=False,
+        manifest=manifest,
+    )
+
+    key = StreamingManifest.task_key('000001', 2023, 'annual')
+    assert result is None
+    assert manifest.entries[key]['status'] == 'process_error'
+    assert manifest.entries[key]['error'] == (
+        'RuntimeError: pdfplumber could not open the file'
+    )
+
+
+def test_process_single_report_records_ok_with_full_result(pipeline_stub, tmp_path, manifest):
+    """Storing the whole analysis dict is what lets a resumed run export a
+    complete summary without re-downloading anything."""
+    _stub_streaming_success(pipeline_stub, tmp_path)
+
+    result = pipeline_stub._process_single_report(
+        stock_code='000001',
+        year=2023,
+        report_type='annual',
+        announcement=_streaming_announcement(),
+        delete_pdf=True,
+        save_parsed_text=False,
+        manifest=manifest,
+    )
+
+    key = StreamingManifest.task_key('000001', 2023, 'annual')
+    assert result is not None
+    assert manifest.entries[key]['status'] == 'ok'
+    assert manifest.entries[key]['result']['stock_code'] == '000001'
+
+    on_disk = _read_manifest(manifest.path)
+    assert on_disk[key]['result']['tone_raw'] == result['tone_raw']
+    # The atomic rename must not leave its staging file behind.
+    assert not Path(manifest.path + '.tmp').exists()
+
+
+def test_run_streaming_writes_manifest_with_tally(pipeline_stub, tmp_path):
+    """Every task lands in the ledger, including the ones that produced nothing."""
+    _stub_streaming_success(pipeline_stub, tmp_path)
+    downloader = pipeline_stub.downloader
+    downloader.query_announcements = (
+        lambda code, year, report_type: [] if code == '000002'
+        else [_streaming_announcement(0)]
+    )
+
+    results = pipeline_stub.run_streaming(
+        company_codes=['000001', '000002'],
+        years=[2023],
+        report_types=['annual'],
+    )
+
+    on_disk = _read_manifest(pipeline_stub.streaming_manifest_path)
+    assert on_disk['000001/2023/annual']['status'] == 'ok'
+    assert on_disk['000002/2023/annual']['status'] == 'no_announcements'
+    assert len(results) == 1
+
+
+def test_run_streaming_survives_a_failing_announcement_query(pipeline_stub, tmp_path):
+    """One transient CNINFO failure must not end the run.
+
+    The tasks are independent, and before the query was wrapped an exception
+    here discarded every result already accumulated in memory."""
+    _stub_streaming_success(pipeline_stub, tmp_path)
+    downloader = pipeline_stub.downloader
+
+    def query(code, year, report_type):
+        if code == '000002':
+            raise RuntimeError('cninfo returned 502')
+        return [_streaming_announcement(0)]
+
+    downloader.query_announcements = query
+
+    results = pipeline_stub.run_streaming(
+        company_codes=['000001', '000002', '000003'],
+        years=[2023],
+        report_types=['annual'],
+    )
+
+    on_disk = _read_manifest(pipeline_stub.streaming_manifest_path)
+    assert len(results) == 2, "the tasks on either side of the failure still ran"
+    assert on_disk['000002/2023/annual']['status'] == 'query_error'
+    assert 'cninfo returned 502' in on_disk['000002/2023/annual']['error']
+
+
+def test_run_streaming_resume_skips_completed_tasks(pipeline_stub, tmp_path):
+    """Resume must not re-download finished reports, and must still export them."""
+    _stub_streaming_success(pipeline_stub, tmp_path)
+    downloader = pipeline_stub.downloader
+    downloader.query_announcements = (
+        lambda code, year, report_type: [] if code == '000002'
+        else [_streaming_announcement(0)]
+    )
+
+    pipeline_stub.run_streaming(
+        company_codes=['000001', '000002'],
+        years=[2023],
+        report_types=['annual'],
+    )
+    downloads_after_first_run = len(downloader.downloaded_paths)
+    assert downloads_after_first_run == 1
+
+    resumed = pipeline_stub.run_streaming(
+        company_codes=['000001', '000002'],
+        years=[2023],
+        report_types=['annual'],
+        resume=True,
+    )
+
+    assert len(downloader.downloaded_paths) == downloads_after_first_run, \
+        "the ok task was served from the ledger, not re-downloaded"
+    assert len(resumed) == 1, "the summary still covers the skipped report"
+    assert resumed.iloc[0]['stock_code'] == '000001'
+
+
+def test_run_streaming_without_resume_starts_a_fresh_ledger(pipeline_stub, tmp_path):
+    """The default must be a clean run: a resubmitted web job against a stale
+    ledger would otherwise come back empty and look like a silent no-op."""
+    _stub_streaming_success(pipeline_stub, tmp_path)
+    downloader = pipeline_stub.downloader
+
+    pipeline_stub.run_streaming(company_codes=['000001'], years=[2023],
+                                report_types=['annual'])
+    first_run_downloads = len(downloader.downloaded_paths)
+
+    results = pipeline_stub.run_streaming(company_codes=['000001'], years=[2023],
+                                          report_types=['annual'])
+
+    assert len(downloader.downloaded_paths) == first_run_downloads * 2
+    assert len(results) == 1
+
+
+def test_streaming_manifest_survives_a_run_that_dies_partway(pipeline_stub, tmp_path):
+    """The ledger is written per task, so an interrupted run still says what
+    finished. Ctrl-C, a cancel and the watchdog all kill the worker without
+    unwinding it, and results otherwise live only in memory until the export."""
+    _stub_streaming_success(pipeline_stub, tmp_path)
+    original_parse = pipeline_stub.parser.parse_pdf
+    calls = {'n': 0}
+
+    def parse_then_die(pdf_path, save_output=True, extract_tables=None):
+        calls['n'] += 1
+        if calls['n'] == 2:
+            raise KeyboardInterrupt
+        return original_parse(pdf_path, save_output=save_output,
+                              extract_tables=extract_tables)
+
+    pipeline_stub.parser.parse_pdf = parse_then_die
+
+    with pytest.raises(KeyboardInterrupt):
+        pipeline_stub.run_streaming(
+            company_codes=['000001', '000002'],
+            years=[2023],
+            report_types=['annual'],
+        )
+
+    on_disk = _read_manifest(pipeline_stub.streaming_manifest_path)
+    assert on_disk['000001/2023/annual']['status'] == 'ok'
+    assert '000002/2023/annual' not in on_disk
+    assert not Path(pipeline_stub.streaming_manifest_path + '.tmp').exists()
 
 
 def test_finish_work_requires_explicit_confirmation(pipeline_stub, tmp_path):
@@ -688,6 +1088,38 @@ def test_run_skip_flags_with_skip_analyze_keep_existing_flow(pipeline_stub, tmp_
     pipeline_stub.parse_phase.assert_not_called()
     pipeline_stub.analyze_phase.assert_not_called()
     assert result.equals(analysis_frame)
+
+
+def test_run_prunes_parsed_output_only_when_it_parsed(pipeline_stub):
+    """Retention is an end-of-run step for runs that parsed. A resume run wrote
+    no parsed output, so pruning there would delete the very directories the
+    next --skip-parse depends on."""
+    pruned = []
+    pipeline_stub.parser = SimpleNamespace(
+        enforce_output_retention=lambda: pruned.append(True)
+    )
+    pipeline_stub.download_phase = Mock(return_value={})
+    pipeline_stub.parse_phase = Mock(
+        return_value=pd.DataFrame([{'stock_code': '000001'}])
+    )
+    pipeline_stub.analyze_phase = Mock(
+        return_value=pd.DataFrame([{'stock_code': '000001'}])
+    )
+    pipeline_stub.save_results = Mock(return_value='out.xlsx')
+
+    pipeline_stub.run(company_codes=['000001'], years=[2023])
+
+    assert pruned == [True], "a parsing run prunes once, after the export"
+
+    pruned.clear()
+    pipeline_stub.parse_phase = Mock(return_value=pd.DataFrame())
+    pipeline_stub._rebuild_metadata_from_files = Mock(return_value={})
+    pipeline_stub._load_parsed_results = Mock(return_value=pd.DataFrame())
+
+    pipeline_stub.run(company_codes=['000001'], years=[2023],
+                      skip_download=True, skip_parse=True)
+
+    assert pruned == [], "a resume run must not prune parsed output"
 
 
 def test_parse_cli_respects_output_override(monkeypatch, tmp_path):

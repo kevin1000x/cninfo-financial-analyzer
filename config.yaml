@@ -29,7 +29,10 @@ downloader:
 parser:
   pdf_engine: "pdfplumber"  # 目前只有 pdfplumber；PyMuPDF 因 AGPL v3 已移除
   output_path: "data/parsed"
-  max_saved_reports: 10     # 非流式路径仅保留最近 10 份解析文本/表格目录
+  max_saved_reports: null   # 解析文本/表格目录保留份数；null = 不裁剪。
+                            # 裁剪在整轮运行结束后执行一次（不再逐份裁剪）。
+                            # 注意：若上限小于本轮报告数，汇总表中被裁剪行的
+                            # text_path 会指向已删除的目录，--skip-parse 也无法复用。
   use_ocr: false
   ocr_language: "chi_sim"
   extract_tables: true
@@ -157,4 +160,13 @@ streaming:
   delete_pdf_after: true    # 分析完成后删除 PDF 文件
   save_parsed_text: true    # 保留解析出的文本文件（体积小，留档复查）
   audit_output_path: "data/parsed/streaming_audit"
-  max_audit_reports: 10     # 仅保留最近 10 份解析文本用于回查
+  max_audit_reports: null   # 流式解析文本留档份数；null = 不裁剪。
+                            # 裁剪在 run_streaming 结束后执行一次（不再逐份裁剪）。
+                            # 注意：若上限小于本轮报告数，汇总表中被裁剪行的
+                            # text_path 会指向已删除的留档目录。
+  manifest_path: null       # 任务台账路径；null = data/results/streaming_manifest.json。
+                            # 每个任务落盘一条（ok / no_announcements / query_error /
+                            # no_url / download_failed / no_text / process_error），
+                            # 所以任务被中断后仍能查到已完成项与失败原因。
+                            # 续跑需显式开启（CLI --resume）；Web 任务不续跑，
+                            # 避免重复提交被旧台账判成空跑。

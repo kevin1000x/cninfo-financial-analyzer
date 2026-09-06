@@ -5,10 +5,6 @@ Unit tests for Metrics module
 import pytest
 import pandas as pd
 import numpy as np
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.metrics import MetricsCalculator, load_financial_data_from_csv
 
@@ -272,10 +268,10 @@ def test_missing_columns(calculator):
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
 
+
 # ---------------------------------------------------------------------
 # Prior-year baseline: TNI must survive when tone covers only target years
 # but the financial CSV (AKShare cache) includes the preceding year.
-
 def test_tni_nonempty_when_tone_single_year_but_financials_include_prior_year(calculator):
     """Two companies × single target year (the classic 2-company web job).
 

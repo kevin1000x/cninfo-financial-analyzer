@@ -12,7 +12,6 @@ import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import datetime
 import aiofiles
 import aiohttp
 import requests
@@ -20,15 +19,15 @@ import urllib3
 from loguru import logger
 from tqdm import tqdm
 
-# Disable insecure request warnings since CNINFO API has certificate issues
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 from .utils import (
     normalize_company_code,
     sanitize_filename,
     is_valid_report,
     format_bytes
 )
+
+# Disable insecure request warnings since CNINFO API has certificate issues
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +415,7 @@ class CNINFODownloader:
             # Must match at least one report type keyword
             if keywords and not any(kw in title for kw in keywords):
                 continue
-                
+
             # Specifically prevent "半年度报告" from matching when we just want "年度报告"
             if report_type == 'annual' and '半' in title:
                 continue

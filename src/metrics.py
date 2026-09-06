@@ -6,8 +6,7 @@ Reference: Financial research methodology for tone vs. performance analysis
 """
 
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict
 from loguru import logger
 
 

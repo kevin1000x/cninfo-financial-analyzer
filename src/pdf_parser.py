@@ -11,7 +11,7 @@ import hashlib
 import shutil
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 from loguru import logger
 import pdfplumber
 
@@ -433,13 +433,18 @@ class PDFParser:
         logger.info(f"Identified {len(statements)} financial statements")
         return statements
 
-    def parse_pdf(self, pdf_path: str, save_output: bool = True) -> Dict:
+    def parse_pdf(self,
+                  pdf_path: str,
+                  save_output: bool = True,
+                  extract_tables: Optional[bool] = None) -> Dict:
         """
         Main parsing function for a single PDF
 
         Args:
             pdf_path: Path to PDF file
             save_output: Whether to save extracted data
+            extract_tables: Override the configured flag for this call; None
+                means use the parser's configured value
 
         Returns:
             Dictionary containing extracted text and tables
@@ -456,6 +461,10 @@ class PDFParser:
             'error': None
         }
 
+        should_extract_tables = (
+            self.extract_tables if extract_tables is None else extract_tables
+        )
+
         try:
             # Extract text
             logger.info(f"Parsing PDF: {pdf_path}")
@@ -468,7 +477,7 @@ class PDFParser:
                 result['mda_text'] = mda_text
 
             # Extract tables
-            if self.extract_tables:
+            if should_extract_tables:
                 tables = self.extract_tables_by_engine(pdf_path)
                 result['tables'] = tables
 
@@ -523,8 +532,6 @@ class PDFParser:
                 statement_path = os.path.join(output_dir, f'{statement_type}.csv')
                 df.to_csv(statement_path, index=False, encoding='utf-8-sig')
 
-        self._enforce_output_retention()
-
         logger.debug(f"Saved parsed data to {output_dir}")
 
         return {
@@ -533,9 +540,14 @@ class PDFParser:
             'output_dir': output_dir
         }
 
-    def _enforce_output_retention(self) -> None:
+    def enforce_output_retention(self) -> None:
         """
         Keep only the most recent N parsed-report directories.
+
+        Callers invoke this once when a run finishes. Pruning per saved report
+        instead would delete earlier reports mid-batch: `--skip-parse` could no
+        longer find them, and every exported `text_path` for a pruned row would
+        point at a directory that no longer exists.
         """
         max_keep = self.max_saved_reports
         if max_keep is None:
@@ -578,5 +590,7 @@ class PDFParser:
         for pdf_path in pdf_files:
             result = self.parse_pdf(pdf_path)
             results.append(result)
+
+        self.enforce_output_retention()
 
         return results

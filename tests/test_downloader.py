@@ -4,12 +4,9 @@ Unit tests for Downloader module
 
 import pytest
 import os
-import sys
 import json
 import requests
 from unittest.mock import Mock, patch, MagicMock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.downloader import (
     CNINFODownloader,

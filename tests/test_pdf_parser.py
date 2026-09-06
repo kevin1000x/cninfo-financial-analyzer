@@ -4,11 +4,8 @@ Unit tests for PDFParser module
 
 import pytest
 import os
-import sys
 from pathlib import Path
 import pandas as pd
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.pdf_parser import PDFParser
 
@@ -166,11 +163,13 @@ def test_save_parsed_data(parser, tmp_path):
     assert (output_dir / 'mda_text.txt').exists()
 
 
-def test_save_parsed_data_retention(parser, tmp_path):
-    """Parser should prune old parsed directories when retention is enabled."""
-    parser.max_saved_reports = 2
+def parser_output_dirs(parser):
+    return [path for path in Path(parser.output_path).iterdir() if path.is_dir()]
 
-    for idx in range(3):
+
+def _save_n_parsed_reports(parser, count):
+    """Save `count` parsed reports, giving each a distinct, ordered mtime."""
+    for idx in range(count):
         parser.save_parsed_data(
             f'test_report_{idx}.pdf',
             {
@@ -180,12 +179,29 @@ def test_save_parsed_data_retention(parser, tmp_path):
                 'financial_statements': {}
             }
         )
-        for order, path in enumerate(sorted(tmp_path.iterdir()), start=1):
-            if path.is_dir():
-                os.utime(path, (order, order))
+        for order, path in enumerate(sorted(parser_output_dirs(parser)), start=1):
+            os.utime(path, (order, order))
 
-    kept_dirs = [path for path in tmp_path.iterdir() if path.is_dir()]
-    assert len(kept_dirs) == 2
+
+def test_save_parsed_data_does_not_prune_mid_batch(parser):
+    """Saving a report must never delete an earlier one. Per-report pruning
+    meant any batch larger than the cap lost the text its own summary
+    pointed at, and --skip-parse could no longer resume from it."""
+    parser.max_saved_reports = 2
+
+    _save_n_parsed_reports(parser, 3)
+
+    assert len(parser_output_dirs(parser)) == 3
+
+
+def test_enforce_output_retention_prunes_oldest_dirs(parser):
+    """The cap is applied explicitly, once, after the run has exported."""
+    parser.max_saved_reports = 2
+
+    _save_n_parsed_reports(parser, 3)
+    parser.enforce_output_retention()
+
+    assert len(parser_output_dirs(parser)) == 2
 
 
 def test_save_parsed_data_honors_output_flags(tmp_path):
@@ -294,6 +310,62 @@ def test_parse_pdf_structure(parser):
     assert 'tables' in result
     assert 'financial_statements' in result
     assert 'error' in result
+
+
+def _stub_pdf_reading(parser, monkeypatch, engine_calls):
+    """Replace the parts of parse_pdf that need a real PDF, recording every
+    call to the table engine so the gate can be asserted on."""
+    monkeypatch.setattr(
+        parser, 'extract_text',
+        lambda pdf_path: '第二章 管理层讨论与分析\n本年度业绩增长。'
+    )
+    monkeypatch.setattr(parser, 'extract_mda_section', lambda text: '本年度业绩增长。')
+
+    def fake_engine(pdf_path):
+        engine_calls.append(pdf_path)
+        return [pd.DataFrame({'col1': ['资产负债表', '流动资产']})]
+
+    monkeypatch.setattr(parser, 'extract_tables_by_engine', fake_engine)
+
+
+def test_parse_pdf_call_can_skip_tables_enabled_in_config(parser, monkeypatch):
+    """The streaming path never reads tables, so it must be able to opt out
+    even though config.yaml keeps extraction on for the batch path."""
+    engine_calls = []
+    _stub_pdf_reading(parser, monkeypatch, engine_calls)
+    assert parser.extract_tables is True
+
+    result = parser.parse_pdf('report.pdf', save_output=False, extract_tables=False)
+
+    assert engine_calls == []
+    assert result['tables'] == []
+    assert result['financial_statements'] == {}
+    assert result['mda_text'] == '本年度业绩增长。'
+
+
+def test_parse_pdf_call_can_enable_tables_disabled_in_config(config, tmp_path, monkeypatch):
+    """The override works in both directions."""
+    config['parser']['output_path'] = str(tmp_path)
+    config['parser']['extract_tables'] = False
+    parser = PDFParser(config)
+    engine_calls = []
+    _stub_pdf_reading(parser, monkeypatch, engine_calls)
+
+    result = parser.parse_pdf('report.pdf', save_output=False, extract_tables=True)
+
+    assert engine_calls == ['report.pdf']
+    assert len(result['tables']) == 1
+    assert 'balance_sheet' in result['financial_statements']
+
+
+def test_parse_pdf_defaults_to_configured_flag(parser, monkeypatch):
+    """Omitting the override preserves the configured behaviour."""
+    engine_calls = []
+    _stub_pdf_reading(parser, monkeypatch, engine_calls)
+
+    parser.parse_pdf('report.pdf', save_output=False)
+
+    assert engine_calls == ['report.pdf']
 
 
 def test_chinese_text_handling(parser):

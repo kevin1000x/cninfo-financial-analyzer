@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import traceback
 from collections import deque
 from dataclasses import dataclass, field
@@ -33,6 +34,15 @@ from loguru import logger
 
 
 HISTORY_CAP = 1000
+
+# Wall-clock budget for one job. The default covers a MAX_TASKS-sized batch
+# (100 reports) with room to spare; without any budget a wedged download or a
+# runaway parse holds the single job slot until the server is restarted.
+DEFAULT_JOB_TIMEOUT_SECONDS = 10800.0
+
+# How long the pump blocks waiting for worker output before it re-checks the
+# deadline. Bounds the overshoot of the timeout to well under a second.
+PUMP_POLL_INTERVAL = 0.5
 
 
 @dataclass
@@ -50,14 +60,27 @@ class JobSpec:
 class JobState:
     id: str
     spec: JobSpec
-    status: str = "pending"  # pending | running | done | error
+    status: str = "pending"  # pending | running | done | error | cancelled
     history: Deque[Dict[str, Any]] = field(default_factory=lambda: deque(maxlen=HISTORY_CAP))
+    # Total events ever published, used as the SSE `id:` source. History
+    # evicts past HISTORY_CAP, so an id derived from a history index would
+    # renumber the same event on each reconnect once a job exceeds the cap.
+    event_seq: int = 0
     subscribers: List[asyncio.Queue] = field(default_factory=list)
     finished: asyncio.Event = field(default_factory=asyncio.Event)
     result_path: Optional[str] = None
     error: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # False whenever there is no killable worker — i.e. the thread runner,
+    # where a Python thread cannot be stopped mid-parse.
+    cancellable: bool = False
+    # Set by a cancel request and observed by the pump, which is the only
+    # thread that touches the child. Signalling the process from the API
+    # thread instead would race the pump on waitpid.
+    cancel_requested: bool = False
+    # 0 or None disables the watchdog.
+    timeout_seconds: Optional[float] = None
 
 
 class JobAlreadyRunning(RuntimeError):
@@ -66,6 +89,14 @@ class JobAlreadyRunning(RuntimeError):
     def __init__(self, running_id: str) -> None:
         super().__init__(f"another job is already running: {running_id}")
         self.running_id = running_id
+
+
+class JobNotCancellable(RuntimeError):
+    """Raised by JobRegistry.cancel when the job cannot be interrupted."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class JobRegistry:
@@ -92,6 +123,24 @@ class JobRegistry:
             if self._running_id == job_id:
                 self._running_id = None
 
+    def cancel(self, job: JobState) -> None:
+        """Flag a running job for termination.
+
+        Returns as soon as the flag is set. The pump thread notices within one
+        poll interval, kills the worker, publishes the terminal events and
+        releases the slot — so the caller learns the outcome by reading
+        job.status afterwards, not from this call.
+        """
+        with self._lock:
+            if job.status not in {"pending", "running"}:
+                raise JobNotCancellable(f"job already finished: status={job.status}")
+            if not job.cancellable:
+                raise JobNotCancellable(
+                    "this job has no interruptible worker "
+                    "(JOB_RUNNER_MODE=thread cannot cancel a running job)"
+                )
+            job.cancel_requested = True
+
     def get(self, job_id: str) -> Optional[JobState]:
         return self._jobs.get(job_id)
 
@@ -112,9 +161,45 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _job_timeout_seconds() -> float:
+    """Wall-clock budget for one job; 0 disables the watchdog.
+
+    Read per job rather than at import so an operator can change it without a
+    redeploy, and so a malformed value fails the POST /jobs request loudly
+    instead of silently disabling the timeout."""
+    raw = os.environ.get("JOB_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_JOB_TIMEOUT_SECONDS
+    return max(float(raw), 0.0)
+
+
+def _terminate(proc) -> None:
+    """Stop a worker process, escalating to SIGKILL if SIGTERM is ignored.
+
+    Safe to call twice: multiprocessing swallows ProcessLookupError, so the
+    pump's own teardown can race a cancel from the API thread."""
+    proc.terminate()
+    proc.join(timeout=5)
+    if proc.is_alive():
+        proc.kill()
+        proc.join(timeout=5)
+
+
+def _stamp(job: JobState, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the job-global monotonic id that becomes the SSE `id:` field.
+
+    The id lives on the payload rather than being counted per connection so
+    that a reconnect replaying history reproduces the exact ids the client
+    already saw — the invariant frontend dedupe depends on."""
+    job.event_seq += 1
+    payload["seq"] = job.event_seq
+    return payload
+
+
 async def _publish(job: JobState, payload: Dict[str, Any]) -> None:
     """Append to history and fan out to subscribers. Runs on the loop thread,
     so history append + subscribers iteration is atomic w.r.t. subscribe()."""
+    _stamp(job, payload)
     job.history.append(payload)
     for q in list(job.subscribers):
         try:
@@ -134,6 +219,7 @@ def _enqueue(loop: asyncio.AbstractEventLoop, job: JobState, payload: Dict[str, 
     Silently drops events if the target loop is gone — happens during
     test teardown and on graceful shutdown."""
     if loop.is_closed():
+        _stamp(job, payload)
         job.history.append(payload)
         if payload.get("type") == "eof":
             try:
@@ -339,8 +425,9 @@ def start_job(spec: JobSpec) -> JobState:
 def start_job_process(job: JobState, loop: asyncio.AbstractEventLoop) -> JobState:
     """Spawn the worker process and a pump thread that relays its events.
 
-    The pump owns all JobState mutation for the process path, converts a
-    dead/crashed worker into a job error, and always releases the job slot."""
+    The pump owns all JobState mutation for the process path, enforces the
+    job's wall-clock deadline, converts a dead/crashed worker into a job
+    error, and always releases the job slot."""
     import multiprocessing
 
     from api.worker import run_child
@@ -349,7 +436,7 @@ def start_job_process(job: JobState, loop: asyncio.AbstractEventLoop) -> JobStat
     recv_conn, send_conn = ctx.Pipe(duplex=False)
     spec_dict = {
         name: getattr(job.spec, name)
-        for name in job.spec.__dataclass_fields__  # type: ignore[attr-defined]
+        for name in job.spec.__dataclass_fields__
     }
     proc = ctx.Process(
         target=run_child,
@@ -357,9 +444,12 @@ def start_job_process(job: JobState, loop: asyncio.AbstractEventLoop) -> JobStat
         name=f"job-{job.id[:8]}",
         daemon=True,
     )
+    job.timeout_seconds = _job_timeout_seconds()
     job.started_at = _now_iso()
     proc.start()
     send_conn.close()  # parent never sends; closing frees the write end
+    # Only once the child exists: before this there is nothing to kill.
+    job.cancellable = True
     pump = threading.Thread(
         target=_pump_process_events,
         args=(job, loop, recv_conn, proc),
@@ -393,9 +483,25 @@ def _pump_process_events(
     proc,
 ) -> None:
     """Relay worker events to the asyncio loop; guarantee eof + slot release."""
+    timeout_seconds = job.timeout_seconds or 0.0
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
     saw_terminal = False
+    timed_out = False
+    cancelled = False
     try:
         while True:
+            # Checked before reading so a cancel lands within one poll interval
+            # even while the worker is chattering, not only when it goes quiet.
+            if job.cancel_requested:
+                cancelled = True
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                break
+            # poll rather than recv: a worker wedged in a C-level call emits
+            # nothing, and a blocking recv would never re-check either condition.
+            if not conn.poll(PUMP_POLL_INTERVAL):
+                continue
             payload = conn.recv()  # raises EOFError when the child closes
             _apply_process_payload(job, payload)
             _enqueue(loop, job, payload)
@@ -411,17 +517,34 @@ def _pump_process_events(
             conn.close()
         except OSError:
             pass
-        proc.join(timeout=30)
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=5)
+        if timed_out or cancelled:
+            # The worker is not going to finish on its own, so skip the join
+            # grace period a normal exit gets.
+            _terminate(proc)
+        else:
+            proc.join(timeout=30)
+            if proc.is_alive():
+                _terminate(proc)
         if not saw_terminal and job.status in {"pending", "running"}:
-            job.status = "error"
-            job.error = (
-                f"worker process exited unexpectedly (exitcode={proc.exitcode})"
-            )
             job.finished_at = _now_iso()
-            _enqueue(loop, job, {"type": "error", "error": job.error})
+            if timed_out:
+                job.status = "error"
+                job.error = (
+                    f"job exceeded its {timeout_seconds:g}s time limit and was terminated"
+                )
+                _enqueue(loop, job, {"type": "error", "error": job.error})
+            elif cancelled:
+                # Not a failure: no error event, so the UI does not paint a
+                # user-requested stop with the red failure card.
+                job.status = "cancelled"
+                job.error = "job cancelled by request"
+                _enqueue(loop, job, {"type": "status", "status": "cancelled"})
+            else:
+                job.status = "error"
+                job.error = (
+                    f"worker process exited unexpectedly (exitcode={proc.exitcode})"
+                )
+                _enqueue(loop, job, {"type": "error", "error": job.error})
         _enqueue(loop, job, {"type": "eof"})
         registry.release(job.id)
 

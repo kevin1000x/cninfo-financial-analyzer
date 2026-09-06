@@ -220,7 +220,11 @@ def test_healthz_never_requires_token(client, monkeypatch):
             "prospectus removed from whitelist (config.yaml has no category, downloader has no keywords)",
         ),
         (
-            {"company_codes": [f"{i:06d}" for i in range(20)], "years": list(range(2010, 2020)), "report_types": ["annual"]},
+            {
+                "company_codes": [f"{i:06d}" for i in range(20)],
+                "years": list(range(2010, 2020)),
+                "report_types": ["annual"],
+            },
             "200 tasks > 100 limit",
         ),
     ],
@@ -290,6 +294,35 @@ def test_429_when_job_already_running(client, monkeypatch):
     assert body["detail"]["running_job_id"] == job_id_1
 
 
+def test_cancel_refused_when_worker_is_not_interruptible(client, monkeypatch):
+    """The thread runner has no killable worker. Accepting the cancel anyway
+    would tell the caller the slot was freed when it was not, so it must 409."""
+    started = []
+
+    def slow_run_job(job, loop):
+        started.append(job.id)
+        time.sleep(2.0)
+        api_runner.registry.release(job.id)
+
+    monkeypatch.setattr(api_runner, "run_job", slow_run_job)
+
+    r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+
+    deadline = time.time() + 1.0
+    while not started and time.time() < deadline:
+        time.sleep(0.02)
+    assert started, "job never reached the runner"
+
+    cancel = client.post(f"/jobs/{job_id}/cancel")
+    assert cancel.status_code == 409
+    assert "interruptible" in cancel.json()["detail"]
+
+    job = api_runner.registry.get(job_id)
+    assert job.cancel_requested is False, "a refused cancel must not set the flag"
+
+
 def test_completed_job_stream_replays_and_terminates(client):
     r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
     assert r.status_code == 200
@@ -318,6 +351,50 @@ def test_completed_job_stream_replays_and_terminates(client):
     assert int_ids == sorted(int_ids), f"ids must be monotonically non-decreasing: {int_ids}"
     assert len(set(int_ids)) == len(int_ids), f"ids must be unique within a stream: {int_ids}"
     assert int_ids[0] == 1, f"first event id must start at 1, got {int_ids[0]}"
+
+
+def test_stream_ids_are_job_global_and_stable_across_reconnects(client, monkeypatch):
+    """History is a capped deque. Past HISTORY_CAP, ids derived from a history
+    index renumber the replayed tail on every reconnect, so the frontend's
+    lastEventId dedupe would drop live events. Ids must be job-global and
+    identical across reconnects."""
+    monkeypatch.setattr(api_runner, "HISTORY_CAP", 4)
+
+    class ChattyPipeline(FakePipeline):
+        def run_streaming(self, **kwargs) -> pd.DataFrame:
+            from loguru import logger
+            for i in range(10):
+                logger.info(f"fake: chatter {i}")
+            return super().run_streaming(**kwargs)
+
+    monkeypatch.setattr("src.pipeline.FinancialAnalysisPipeline", ChattyPipeline)
+
+    r = client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    def replay() -> list[int]:
+        with client.stream("GET", f"/jobs/{job_id}/stream") as resp:
+            assert resp.status_code == 200
+            chunks = "".join(resp.iter_text())
+        events = _parse_sse(chunks)
+        assert [t for t, _, _ in events][-1] == "eof"
+        assert all(eid is not None for _, _, eid in events), "every event must have an id"
+        return [int(eid) for _, _, eid in events]  # type: ignore[arg-type]
+
+    first = replay()
+    second = replay()
+
+    job = api_runner.registry.get(job_id)
+    assert job is not None
+    assert len(job.history) == api_runner.HISTORY_CAP
+    assert job.event_seq > api_runner.HISTORY_CAP, "fixture must overflow history"
+
+    assert first == second, "replayed ids must be identical across reconnects"
+    assert first[0] == job.event_seq - len(job.history) + 1
+    assert first[0] > 1, "ids must not restart at 1 once history evicts"
+    assert first == list(range(first[0], first[0] + len(first)))
 
 
 def test_cookies_file_takes_precedence(client, monkeypatch, tmp_path):

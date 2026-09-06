@@ -8,6 +8,7 @@ Routes:
   GET  /jobs/{id}/stream          SSE: log lines + done/error events,
                                   replays history for late connections
   GET  /jobs/{id}/result          download the master_summary xlsx
+  POST /jobs/{id}/cancel          terminate a running job and free the slot
 
 Auth:
   Set API_TOKEN in the environment to require Authorization: Bearer <token>
@@ -24,7 +25,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +36,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .runner import (
     JobAlreadyRunning,
+    JobNotCancellable,
     JobSpec,
     registry,
     start_job,
@@ -247,44 +249,36 @@ async def stream_job(job_id: str, _: None = Depends(require_token)):
         already_finished = job.finished.is_set()
         queue = None if already_finished else subscribe(job)
 
-        # Per-stream monotonic id stamps each yielded event. EventSource on
-        # the browser side surfaces it as MessageEvent.lastEventId so the
-        # frontend can dedupe across auto-reconnects (which always replay
-        # the full history). Numbering is deterministic across reconnects:
-        # event at history index k always carries id k+1.
-        seq = 0
+        # Every payload carries a job-global monotonic id stamped by
+        # runner._publish. EventSource surfaces it to the browser as
+        # MessageEvent.lastEventId, which lets the frontend drop the replayed
+        # prefix after an auto-reconnect. The id must come from the payload
+        # and not from a per-connection counter: history is a capped deque,
+        # so index-derived numbering renumbers the same event once a job
+        # exceeds HISTORY_CAP and dedupe would both miss and over-match.
+        def sse(payload: Dict[str, Any]) -> Dict[str, str]:
+            event_type = payload.get("type", "log")
+            return {
+                "event": event_type,
+                "data": json.dumps(payload, ensure_ascii=False),
+                "id": str(payload["seq"]),
+            }
+
         try:
             for payload in snapshot:
-                seq += 1
-                event_type = payload.get("type", "log")
-                yield {
-                    "event": event_type,
-                    "data": json.dumps(payload, ensure_ascii=False),
-                    "id": str(seq),
-                }
+                yield sse(payload)
 
             if already_finished:
                 tail = snapshot[-1] if snapshot else None
                 if not tail or tail.get("type") != "eof":
-                    seq += 1
-                    yield {
-                        "event": "eof",
-                        "data": json.dumps({"type": "eof"}),
-                        "id": str(seq),
-                    }
+                    yield sse({"type": "eof", "seq": job.event_seq + 1})
                 return
 
             assert queue is not None
             while True:
                 payload = await queue.get()
-                seq += 1
-                event_type = payload.get("type", "log")
-                yield {
-                    "event": event_type,
-                    "data": json.dumps(payload, ensure_ascii=False),
-                    "id": str(seq),
-                }
-                if event_type == "eof":
+                yield sse(payload)
+                if payload.get("type") == "eof":
                     return
         finally:
             if queue is not None:
@@ -316,3 +310,20 @@ def download_result(job_id: str, _: None = Depends(require_token)):
         filename=path.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@app.post("/jobs/{job_id}/cancel", status_code=202)
+def cancel_job(job_id: str, _: None = Depends(require_token)) -> dict:
+    """Terminate a running job and free the single job slot.
+
+    202, not 200: the runner only sets a flag here. The pump thread kills the
+    worker, publishes the terminal `cancelled` status and releases the slot,
+    so the outcome arrives over SSE and via GET /jobs/{id}."""
+    job = registry.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    try:
+        registry.cancel(job)
+    except JobNotCancellable as exc:
+        raise HTTPException(status_code=409, detail=exc.reason)
+    return {"job_id": job.id, "cancel_requested": True}

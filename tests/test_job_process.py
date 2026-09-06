@@ -6,6 +6,8 @@ api.worker test hooks (CNINFO_JOB_TEST_MODE) instead of a monkeypatched
 pipeline, because monkeypatches cannot cross a spawn boundary. They verify:
 - event-loop responsiveness while the worker burns CPU (the original bug)
 - crashed workers become job errors and release the single-job slot
+- a cancel request kills the worker, marks the job cancelled and frees the slot
+- the wall-clock watchdog terminates a job nobody cancels
 - SSE streams live progress and terminates with eof
 - the produced xlsx is downloadable via /jobs/{id}/result
 """
@@ -22,6 +24,10 @@ from api import main as api_main
 from api import runner as api_runner
 
 
+# CLAUDE.md: after a job finishes, job.history types must be a subset of this.
+CONTRACT_EVENT_TYPES = {"status", "log", "done", "error", "eof"}
+
+
 @pytest.fixture
 def proc_client(monkeypatch, tmp_path):
     """TestClient with the real process runner; stubs come from the child's
@@ -33,6 +39,7 @@ def proc_client(monkeypatch, tmp_path):
     monkeypatch.delenv("CNINFO_COOKIES_JSON", raising=False)
     monkeypatch.delenv("CNINFO_JOB_TEST_MODE", raising=False)
     monkeypatch.delenv("JOB_RUNNER_MODE", raising=False)
+    monkeypatch.delenv("JOB_TIMEOUT_SECONDS", raising=False)
     api_runner.registry.reset_for_tests()
 
     with TestClient(api_main.app) as c:
@@ -41,12 +48,19 @@ def proc_client(monkeypatch, tmp_path):
     api_runner.registry.reset_for_tests()
 
 
-def _wait_for_status(client: TestClient, job_id: str, target: str, *, timeout: float = 60.0) -> dict:
+def _wait_for_status(
+    client: TestClient,
+    job_id: str,
+    target: str,
+    *,
+    timeout: float = 60.0,
+    headers: dict | None = None,
+) -> dict:
     deadline = time.time() + timeout
     last: dict = {}
     while time.time() < deadline:
-        r = client.get(f"/jobs/{job_id}")
-        assert r.status_code == 200
+        r = client.get(f"/jobs/{job_id}", headers=headers or {})
+        assert r.status_code == 200, f"status poll failed: {r.status_code} {r.text}"
         last = r.json()
         if last["status"] == target:
             return last
@@ -106,6 +120,134 @@ def test_crashed_worker_becomes_error_and_releases_slot(proc_client, monkeypatch
     r2 = proc_client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
     assert r2.status_code == 200
     _wait_for_status(proc_client, r2.json()["job_id"], "done")
+
+
+def test_cancel_kills_worker_and_frees_slot(proc_client, monkeypatch):
+    """P0-3: without a cancel path, a wedged worker holds the single job slot
+    until the server is restarted."""
+    monkeypatch.setenv("CNINFO_JOB_TEST_MODE", "cpu")
+    monkeypatch.setenv("CNINFO_JOB_TEST_CPU_SECONDS", "60")
+
+    r = proc_client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    _wait_for_status(proc_client, job_id, "running")
+
+    cancel = proc_client.post(f"/jobs/{job_id}/cancel")
+    assert cancel.status_code == 202
+    assert cancel.json() == {"job_id": job_id, "cancel_requested": True}
+
+    # The worker was spinning for 60s; reaching "cancelled" promptly is the
+    # proof that it was actually killed rather than waited out.
+    started = time.time()
+    snap = _wait_for_status(proc_client, job_id, "cancelled")
+    assert time.time() - started < 30, "cancel did not interrupt the worker"
+    assert snap["error"] == "job cancelled by request"
+    assert snap["result_path"] is None
+
+    job = api_runner.registry.get(job_id)
+    types = [payload["type"] for payload in job.history]
+    assert set(types) <= CONTRACT_EVENT_TYPES, f"unexpected types: {types}"
+    assert types[-1] == "eof"
+    # A user-requested stop is a terminal state, not a failure: no error event,
+    # so the UI does not render the red failure card.
+    assert "error" not in types, f"cancel must not emit an error event: {types}"
+    assert "done" not in types
+    assert types.count("status") >= 2, f"expected running + cancelled: {types}"
+
+    # The point of the fix: the slot is usable again.
+    monkeypatch.setenv("CNINFO_JOB_TEST_CPU_SECONDS", "0.2")
+    r2 = proc_client.post("/jobs", json={"company_codes": ["600519"], "years": [2023]})
+    assert r2.status_code == 200, "cancelled job must release the single-job slot"
+    _wait_for_status(proc_client, r2.json()["job_id"], "done")
+
+
+def test_timeout_terminates_job_nobody_cancelled(proc_client, monkeypatch):
+    """The watchdog is the backstop for a job no client cancels — e.g. the
+    browser tab was closed while a download wedged."""
+    monkeypatch.setenv("CNINFO_JOB_TEST_MODE", "cpu")
+    monkeypatch.setenv("CNINFO_JOB_TEST_CPU_SECONDS", "60")
+    monkeypatch.setenv("JOB_TIMEOUT_SECONDS", "1")
+
+    r = proc_client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+
+    started = time.time()
+    snap = _wait_for_status(proc_client, job_id, "error")
+    elapsed = time.time() - started
+    assert "time limit" in (snap["error"] or ""), snap["error"]
+    assert elapsed < 30, f"watchdog did not fire; worker ran {elapsed:.1f}s of its 60s spin"
+
+    job = api_runner.registry.get(job_id)
+    types = [payload["type"] for payload in job.history]
+    assert set(types) <= CONTRACT_EVENT_TYPES, f"unexpected types: {types}"
+    assert types[-1] == "eof"
+    # Unlike a cancel, a timeout IS a failure and must surface as one.
+    assert "error" in types, f"timeout must emit an error event: {types}"
+    assert any("time limit" in payload.get("error", "") for payload in job.history)
+
+    monkeypatch.delenv("JOB_TIMEOUT_SECONDS")
+    monkeypatch.setenv("CNINFO_JOB_TEST_CPU_SECONDS", "0.2")
+    r2 = proc_client.post("/jobs", json={"company_codes": ["600519"], "years": [2023]})
+    assert r2.status_code == 200, "timed-out job must release the single-job slot"
+    _wait_for_status(proc_client, r2.json()["job_id"], "done")
+
+
+def test_timeout_of_zero_disables_watchdog(proc_client, monkeypatch):
+    """0 is the documented off switch; a long job must be allowed to finish."""
+    monkeypatch.setenv("CNINFO_JOB_TEST_MODE", "cpu")
+    monkeypatch.setenv("CNINFO_JOB_TEST_CPU_SECONDS", "2")
+    monkeypatch.setenv("JOB_TIMEOUT_SECONDS", "0")
+
+    r = proc_client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    assert r.status_code == 200
+    snap = _wait_for_status(proc_client, r.json()["job_id"], "done")
+    assert snap["error"] is None
+
+
+def test_cancel_rejects_job_that_already_finished(proc_client, monkeypatch):
+    monkeypatch.setenv("CNINFO_JOB_TEST_MODE", "cpu")
+    monkeypatch.setenv("CNINFO_JOB_TEST_CPU_SECONDS", "0.2")
+
+    r = proc_client.post("/jobs", json={"company_codes": ["600519"], "years": [2022]})
+    job_id = r.json()["job_id"]
+    _wait_for_status(proc_client, job_id, "done")
+
+    cancel = proc_client.post(f"/jobs/{job_id}/cancel")
+    assert cancel.status_code == 409
+    assert "already finished" in cancel.json()["detail"]
+    # A rejected cancel must not disturb the completed job.
+    assert proc_client.get(f"/jobs/{job_id}").json()["status"] == "done"
+
+
+def test_cancel_unknown_job_is_404(proc_client):
+    assert proc_client.post("/jobs/no-such-job/cancel").status_code == 404
+
+
+def test_cancel_requires_token(proc_client, monkeypatch):
+    monkeypatch.setenv("CNINFO_JOB_TEST_MODE", "cpu")
+    monkeypatch.setenv("CNINFO_JOB_TEST_CPU_SECONDS", "5")
+    monkeypatch.setenv("API_TOKEN", "s3cret")
+
+    r = proc_client.post(
+        "/jobs",
+        json={"company_codes": ["600519"], "years": [2022]},
+        headers={"Authorization": "Bearer s3cret"},
+    )
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+
+    unauth = proc_client.post(f"/jobs/{job_id}/cancel")
+    assert unauth.status_code == 401, "cancel is a mutating route and must be gated"
+
+    authed = proc_client.post(
+        f"/jobs/{job_id}/cancel", headers={"Authorization": "Bearer s3cret"}
+    )
+    assert authed.status_code == 202
+    _wait_for_status(
+        proc_client, job_id, "cancelled", headers={"Authorization": "Bearer s3cret"}
+    )
 
 
 def test_429_while_process_job_running(proc_client, monkeypatch):

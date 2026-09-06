@@ -1,0 +1,10 @@
+# `pip install -e ".[automation]"` — browser-driven downloads.
+#
+# Used by SeleniumDownloader / PlaywrightDownloader in src/downloader.py, the
+# fallback for announcements the cookie-based HTTP path cannot reach. Both are
+# imported lazily, so nothing else in the repo needs them.
+#
+# setup.py reads this file for the `automation` extra; do not duplicate it there.
+
+selenium>=4.15,<5
+playwright>=1.40,<2         # also needs: playwright install chromium

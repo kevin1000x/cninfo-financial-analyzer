@@ -1,0 +1,38 @@
+name: backend-verify
+
+# push:main plus pull_request, rather than a bare [push, pull_request]: the
+# latter runs the suite twice for every commit on a branch that has an open PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the Dockerfile base image and setup.py's python_requires.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      # make check never imports setup.py, so this is the only step that proves
+      # the packaging metadata still parses — setup.py reads all four
+      # requirements files at build time to populate install_requires and extras.
+      - name: Verify the package builds
+        run: python -m pip install -e . --no-deps
+
+      # flake8 (.flake8) + mypy (mypy.ini) over src/ and api/, then pytest.
+      - name: Lint, type-check and test
+        run: make check

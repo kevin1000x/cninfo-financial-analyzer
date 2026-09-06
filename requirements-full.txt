@@ -1,0 +1,18 @@
+# `pip install -e ".[full]"` — opt-in PDF table engines and OCR.
+#
+# src/ imports each of these lazily inside the function that needs it and logs a
+# specific "not installed" message, so leaving them out degrades one feature with
+# a legible error rather than breaking import. Each also needs a system binary
+# the wheel cannot supply, which is why they are not in the default image.
+#
+# setup.py reads this file for the `full` extra; do not duplicate the list there.
+
+# --- Table extraction — config.yaml parser.table_parser ---------------------
+camelot-py[cv]>=0.11,<2     # apt: ghostscript libgl1 libglib2.0-0
+tabula-py>=2.8,<3           # apt: a Java runtime (default-jre-headless)
+
+# --- OCR fallback for scanned PDFs — config.yaml parser.use_ocr -------------
+# src/pdf_parser.py imports these two together in extract_text_ocr(); installing
+# only one of them still leaves that path failing.
+pytesseract>=0.3.10,<1      # apt: tesseract-ocr tesseract-ocr-chi-sim
+pdf2image>=1.16,<2          # apt: poppler-utils

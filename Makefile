@@ -19,29 +19,29 @@ help:
 	@echo ""
 
 install:
-	pip install -e .
+	python -m pip install -e .
 
 install-dev:
-	pip install -e ".[dev,full]"
+	python -m pip install -e ".[dev,full]"
 
 install-full:
-	pip install -e ".[full]"
+	python -m pip install -e ".[full]"
 
 test:
-	pytest tests/ -v
+	python -m pytest tests/ -v
 
 test-cov:
-	pytest tests/ --cov=src --cov-report=html --cov-report=term
+	python -m pytest tests/ --cov=src --cov-report=html --cov-report=term
 
 lint:
-	flake8 src/ tests/
-	mypy --config-file mypy.ini src/
+	python -m flake8 src/ api/ tests/
+	python -m mypy --config-file mypy.ini src/ api/
 
 typecheck:
-	mypy --config-file mypy.ini src/
+	python -m mypy --config-file mypy.ini src/ api/
 
 format:
-	black src/ tests/ examples/
+	python -m black src/ tests/ examples/
 
 clean:
 	rm -rf build/

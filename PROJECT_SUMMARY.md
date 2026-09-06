@@ -23,8 +23,14 @@ cninfo-financial-analyzer/
 ├── README.md                    # 主文档
 ├── USAGE_GUIDE.md               # 详细使用示例
 ├── LICENSE                      # MIT 许可证
-├── requirements.txt             # Python 依赖
-├── setup.py                     # 包安装脚本
+├── requirements.txt             # 运行时依赖（src/ 与 api/）
+├── requirements-dev.txt         # 测试与代码风格工具（make check）
+├── requirements-full.txt        # 可选：表格引擎与 OCR
+├── requirements-automation.txt  # 可选：Selenium / Playwright
+├── setup.py                     # 包安装脚本（依赖从上述文件读取）
+├── conftest.py                  # 让 pytest 能 import src/ 与 api/
+├── .flake8                      # flake8 配置（行宽 120）
+├── mypy.ini                     # mypy 配置
 ├── config.yaml                  # 配置文件
 ├── Makefile                     # 构建自动化
 ├── .gitignore                   # Git 忽略规则
@@ -107,11 +113,11 @@ metadata = downloader.download_reports(
 
 * 文本解析：pdfplumber；扫描件走 OCR 兜底
 * 使用关键词匹配提取管理层讨论与分析（MD&A）章节
-* 当 MD&A 过短、像目录或占全文比例异常时，分析阶段会自动回退到全文
+* 当 MD&A 过短、像目录、占全文比例过低，或覆盖全文一半以上（即解析器整篇回退）时，分析阶段会自动回退到全文，并把 `analysis_text_source` 标为 `full_text`
 * 识别并提取财务报表（资产负债表、利润表、现金流量表）
 * 表格解析支持多个引擎（pdfplumber、tabula、camelot）
 * 对扫描件支持 OCR（Tesseract）
-* 解析留档默认仅保留最近 10 份，并排除 `streaming_audit/`
+* 解析留档默认不裁剪（`max_saved_reports: null`），并排除 `streaming_audit/`
 
 **示例用法**：
 
@@ -236,7 +242,7 @@ metrics_df = calculator.calculate_all_metrics(
 * 可配置的跳过选项（如测试时跳过下载/解析）
 * 支持 `--skip-analyze` 复用最新中间分析结果
 * 支持 `--restore-parse-results [PICKLE]` / `--restore-analysis-results [PICKLE]` 从 latest 或指定中间结果恢复
-* 流式模式的文本审计目录默认仅保留最近 10 份
+* 流式模式的文本审计目录默认不裁剪（`max_audit_reports: null`）；设置上限时在 `run_streaming` 导出结果后统一裁剪一次
 * 支持多种结果保存格式
 
 **示例用法**：

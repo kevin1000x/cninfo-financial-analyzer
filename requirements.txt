@@ -1,70 +1,51 @@
-# Core dependencies
-aiohttp>=3.9.0
-requests>=2.31.0
-httpx>=0.25.0
+# Runtime dependencies for src/ (CLI + pipeline) and api/ (FastAPI web layer).
+#
+# Every entry below is either imported at module level or used as an explicit
+# pandas engine. Ceilings are the next major above the version this repo is
+# verified against, so a fresh install reproduces a working tree without
+# freezing patch releases.
+#
+#   requirements-dev.txt         lint + test tools            -> extra `dev`
+#   requirements-full.txt        PDF table engines + OCR      -> extra `full`
+#   requirements-automation.txt  Selenium / Playwright        -> extra `automation`
+#
+# setup.py reads all four, so a dependency is declared in exactly one place.
+#
+# Install with:  pip install -r requirements.txt
+
+# --- HTTP / async -----------------------------------------------------------
+aiohttp>=3.9,<4
+aiofiles>=23.2,<26
+requests>=2.31,<3
+urllib3>=2.0,<3             # imported directly by src/downloader.py, not just via requests
+
+# --- Web layer (api/) -------------------------------------------------------
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
+sse-starlette>=1.8.2,<4
+pydantic>=2.5,<3
+
+# --- PDF text extraction ----------------------------------------------------
+pdfplumber>=0.10,<1
+
+# --- Chinese NLP ------------------------------------------------------------
+jieba>=0.42.1,<1
+
+# --- Data processing --------------------------------------------------------
+pandas>=2.1,<4
+numpy>=1.24,<3
+openpyxl>=3.1,<4            # to_excel(engine='openpyxl')  — src/pipeline.py
+pyarrow>=14.0,<25           # to_parquet(engine='pyarrow') — src/pipeline.py
+
+# --- Utilities --------------------------------------------------------------
+PyYAML>=6.0,<7
+tqdm>=4.66,<5
+loguru>=0.7,<1
+
+# --- Financial metrics (opt-in per job) -------------------------------------
+# Both are imported lazily and raise a clear RuntimeError naming the missing
+# package. They stay in the runtime set because the web UI offers
+# financial_data_source="akshare" and Supabase is that path's cache, so a
+# default image without them would fail a request the frontend can make.
 akshare==1.18.64
 supabase==2.31.0
-
-# PDF processing
-pdfplumber>=0.10.0
-tabula-py>=2.8.0
-camelot-py[cv]>=0.11.0
-pytesseract>=0.3.10  # For OCR fallback
-
-# Chinese NLP
-jieba>=0.42.1
-pypinyin>=0.49.0
-opencc-python-reimplemented>=0.1.7  # Simplified/Traditional conversion
-
-# Data processing
-pandas>=2.1.0
-numpy>=1.24.0
-openpyxl>=3.1.0  # Excel support
-pyarrow>=14.0.0  # Parquet support
-fastparquet>=2023.10.0
-
-# Text processing
-regex>=2023.10.0
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
-
-# Async and concurrency
-asyncio>=3.4.3
-aiofiles>=23.2.0
-
-# Utilities
-PyYAML>=6.0
-tqdm>=4.66.0
-loguru>=0.7.0
-python-dateutil>=2.8.0
-
-# Optional: Browser automation (uncomment if needed)
-# selenium>=4.15.0
-# playwright>=1.40.0
-
-# Testing
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-asyncio>=0.21.0
-pytest-mock>=3.12.0
-
-# Development tools
-black>=23.10.0
-flake8>=6.1.0
-mypy>=1.6.0
-pre-commit>=3.5.0
-
-# Visualization (optional)
-matplotlib>=3.8.0
-seaborn>=0.13.0
-
-# Progress bars and CLI
-click>=8.1.0
-rich>=13.6.0
-setuptools>=80.6.0
-
-# Web API (api/ module — wraps the CLI for the web frontend)
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-sse-starlette>=1.8.2
-python-multipart>=0.0.9

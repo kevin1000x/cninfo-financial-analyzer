@@ -17,16 +17,19 @@ LABEL description="CNINFO Financial Report Analyzer (FastAPI web layer)"
 WORKDIR /app
 
 # System libs:
-#   - gcc/g++/lib*-dev: build wheels that don't ship arm64/manylinux binaries
-#   - tesseract + chi-sim: OCR fallback for scanned PDFs
-#   - ghostscript + poppler: camelot table extraction
-#   - libgl1 + libglib2.0-0: opencv (camelot[cv] dep)
+#   - gcc/g++ + zlib/jpeg/png dev headers: build wheels that ship no
+#     arm64/manylinux binary for this base image
+#
+# The table engines and OCR fallback are opt-in (requirements-full.txt), so
+# their system packages are not installed here. To serve scanned PDFs or
+# camelot/tabula extraction, add them back alongside that requirements file:
+#   tesseract-ocr tesseract-ocr-chi-sim   for pytesseract
+#   poppler-utils                         for pdf2image
+#   ghostscript libgl1 libglib2.0-0       for camelot-py[cv]
+#   default-jre-headless                  for tabula-py
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc g++ \
-        libxml2-dev libxslt1-dev zlib1g-dev libjpeg-dev libpng-dev \
-        tesseract-ocr tesseract-ocr-chi-sim \
-        ghostscript poppler-utils \
-        libgl1 libglib2.0-0 \
+        zlib1g-dev libjpeg-dev libpng-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache layer for Python deps

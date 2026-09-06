@@ -1,13 +1,36 @@
 """
 Setup script for CNINFO Financial Analyzer
+
+Dependency lists are parsed out of the requirements-*.txt files rather than
+restated here; the two copies used to drift apart.
 """
 
 from setuptools import setup, find_packages
 from pathlib import Path
 
+ROOT = Path(__file__).parent
+
 # Read README for long description
-readme_file = Path(__file__).parent / 'README.md'
+readme_file = ROOT / 'README.md'
 long_description = readme_file.read_text(encoding='utf-8') if readme_file.exists() else ''
+
+
+def read_requirements(filename: str) -> list:
+    """Parse a requirements file into a list of requirement strings.
+
+    Comments (including the trailing `# apt: ...` notes that record which system
+    binary each optional wheel needs) and `-r` includes are dropped: extras are
+    additive to install_requires, so a `-r requirements.txt` line in the dev file
+    must not restate the runtime set.
+    """
+    lines = (ROOT / filename).read_text(encoding='utf-8').splitlines()
+    reqs = []
+    for raw in lines:
+        line = raw.split('#')[0].strip()
+        if line and not line.startswith('-'):
+            reqs.append(line)
+    return reqs
+
 
 setup(
     name='cninfo-financial-analyzer',
@@ -18,7 +41,9 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/kevin1000x/cninfo-financial-analyzer',
-    packages=find_packages(),
+    # tests/ has an __init__.py, so a bare find_packages() shipped the test suite
+    # as an importable top-level `tests` package.
+    packages=find_packages(include=['src', 'src.*', 'api', 'api.*']),
     classifiers=[
         'Development Status :: 4 - Beta',
         'Intended Audience :: Science/Research',
@@ -27,62 +52,20 @@ setup(
         'Topic :: Scientific/Engineering :: Information Analysis',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9',
-        'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
         'Natural Language :: Chinese (Simplified)',
     ],
-    python_requires='>=3.8',
-    install_requires=[
-        'aiohttp>=3.9.0',
-        'requests>=2.31.0',
-        'httpx>=0.25.0',
-        'akshare==1.18.64',
-        'supabase==2.31.0',
-        'pdfplumber>=0.10.0',
-        'jieba>=0.42.1',
-        'pandas>=2.1.0',
-        'numpy>=1.24.0',
-        'openpyxl>=3.1.0',
-        'pyarrow>=14.0.0',
-        'PyYAML>=6.0',
-        'tqdm>=4.66.0',
-        'loguru>=0.7.0',
-        'python-dateutil>=2.8.0',
-        'beautifulsoup4>=4.12.0',
-        'lxml>=4.9.0',
-        'aiofiles>=23.2.0',
-        'regex>=2023.10.0',
-        'click>=8.1.0',
-        'rich>=13.6.0',
-    ],
+    # 3.11, not the 3.8 this used to claim: pandas>=3 and numpy>=2.4 — both hard
+    # runtime dependencies — declare Requires-Python >=3.11, mypy.ini type-checks
+    # against 3.11 and the published image is python:3.12-slim. Nothing tested
+    # 3.8 through 3.10.
+    python_requires='>=3.11',
+    install_requires=read_requirements('requirements.txt'),
     extras_require={
-        'full': [
-            'tabula-py>=2.8.0',
-            'camelot-py[cv]>=0.11.0',
-            'pytesseract>=0.3.10',
-            'pdf2image>=1.16.0',
-            'pypinyin>=0.49.0',
-            'opencc-python-reimplemented>=0.1.7',
-            'fastparquet>=2023.10.0',
-            'matplotlib>=3.8.0',
-            'seaborn>=0.13.0',
-        ],
-        'automation': [
-            'selenium>=4.15.0',
-            'playwright>=1.40.0',
-        ],
-        'dev': [
-            'pytest>=7.4.0',
-            'pytest-cov>=4.1.0',
-            'pytest-asyncio>=0.21.0',
-            'pytest-mock>=3.12.0',
-            'black>=23.10.0',
-            'flake8>=6.1.0',
-            'mypy>=1.6.0',
-            'pre-commit>=3.5.0',
-        ],
+        'full': read_requirements('requirements-full.txt'),
+        'automation': read_requirements('requirements-automation.txt'),
+        'dev': read_requirements('requirements-dev.txt'),
     },
     entry_points={
         'console_scripts': [

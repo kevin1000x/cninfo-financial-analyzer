@@ -50,7 +50,7 @@ git clone https://github.com/kevin1000x/cninfo-financial-analyzer
 cd cninfo-financial-analyzer
 
 # 创建虚拟环境
-python3.10 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate
 ```
 
@@ -133,14 +133,14 @@ docker run -it -v $(pwd)/data:/app/data \
 ### 最低配置
 
 * **操作系统**：Linux、macOS、或 Windows 10+
-* **Python**：3.8 及以上（推荐 3.10）
+* **Python**：3.11 及以上（推荐 3.12）
 * **内存**：最低 4 GB，建议 8 GB
 * **磁盘**：至少 10 GB 可用（用于 PDF 与结果）
 * **网络**：稳定的互联网连接
 
 ### 推荐配置
 
-* **Python**：3.10 或 3.11
+* **Python**：3.12
 * **内存**：16 GB（用于大批量处理）
 * **磁盘**：50 GB 以上（大规模数据采集）
 * **CPU**：多核，便于并行处理
@@ -153,14 +153,14 @@ docker run -it -v $(pwd)/data:/app/data \
 
 ```bash
 # 安装系统依赖
+# build-essential / zlib1g-dev：为没有预编译 wheel 的依赖构建轮子
+# tesseract / ghostscript / poppler：仅 [full] 额外功能需要（OCR 与 camelot 表格解析）
 sudo apt-get update
 sudo apt-get install -y \
-    python3.10 \
-    python3.10-venv \
+    python3.12 \
+    python3.12-venv \
     python3-pip \
     build-essential \
-    libxml2-dev \
-    libxslt1-dev \
     zlib1g-dev \
     tesseract-ocr \
     tesseract-ocr-chi-sim \
@@ -168,7 +168,7 @@ sudo apt-get install -y \
     poppler-utils
 
 # 安装 Python 包
-python3.10 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate
 pip install -e ".[full]"
 ```
@@ -179,11 +179,11 @@ pip install -e ".[full]"
 # 安装 Homebrew（若尚未安装）
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# 安装依赖
-brew install python@3.10 tesseract tesseract-lang poppler
+# 安装依赖（tesseract / poppler 仅 [full] 的 OCR 路径需要）
+brew install python@3.12 tesseract tesseract-lang poppler
 
 # 设置虚拟环境
-python3.10 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate
 pip install -e ".[full]"
 ```
@@ -191,7 +191,7 @@ pip install -e ".[full]"
 ### Windows
 
 ```powershell
-# 1. 从 python.org 安装 Python 3.10
+# 1. 从 python.org 安装 Python 3.12
 
 # 2. 安装 Tesseract（用于 OCR）
 # 从：https://github.com/UB-Mannheim/tesseract/wiki 下载
@@ -225,7 +225,7 @@ pip install -e .[full]
 source venv/bin/activate  # Windows：venv\Scripts\activate
 
 # 检查 Python 版本
-python --version  # 应为 3.8 及以上
+python --version  # 应为 3.11 及以上
 
 # 检查包是否安装
 python -c "import src; print(src.__version__)"
@@ -276,42 +276,22 @@ tail -f logs/analyzer.log
 
 ## 依赖详情
 
-### 核心依赖（必需）
+依赖只在一处声明：`setup.py` 直接读取下列文件，所以文档不再复制版本清单。
 
-```
-aiohttp>=3.9.0          # 异步 HTTP 客户端
-requests>=2.31.0        # HTTP 请求库
-pandas>=2.1.0           # 数据处理
-numpy>=1.24.0           # 数值计算
-pdfplumber>=0.10.0      # PDF 解析
-jieba>=0.42.1           # 中文分词
-PyYAML>=6.0             # 配置文件解析
-loguru>=0.7.0           # 日志库
-tqdm>=4.66.0            # 进度条
-openpyxl>=3.1.0         # Excel 支持
-```
+| 文件 | 安装方式 | 内容 |
+|---|---|---|
+| `requirements.txt` | `pip install -r requirements.txt` | 运行时依赖：`src/` 管道与 `api/` Web 层 |
+| `requirements-full.txt` | `pip install -e ".[full]"` | camelot / tabula 表格引擎 + pytesseract / pdf2image OCR |
+| `requirements-automation.txt` | `pip install -e ".[automation]"` | Selenium / Playwright 浏览器下载 |
+| `requirements-dev.txt` | `pip install -e ".[dev]"` | pytest / flake8 / mypy / black（`make check` 所需） |
 
-### 可选依赖
+`requirements-full.txt` 与 `requirements-automation.txt` 里的包都是**惰性导入**：缺失时只会让对应功能报出一条指明缺哪个包的错误，不影响其余路径。但它们各自还需要一个 wheel 无法提供的系统程序：
 
-```
-# OCR 支持
-pytesseract>=0.3.10
-pdf2image>=1.16.0
-
-# 高级表格解析
-tabula-py>=2.8.0
-camelot-py[cv]>=0.11.0
-
-# 浏览器自动化（处理验证码）
-selenium>=4.15.0
-playwright>=1.40.0
-
-# 开发工具
-pytest>=7.4.0
-black>=23.10.0
-flake8>=6.1.0
-mypy>=1.6.0
-```
+* `pytesseract` → `tesseract-ocr`、`tesseract-ocr-chi-sim`
+* `pdf2image` → `poppler-utils`
+* `camelot-py[cv]` → `ghostscript`、`libgl1`、`libglib2.0-0`
+* `tabula-py` → Java 运行时（`default-jre-headless`）
+* `playwright` → `playwright install chromium`
 
 ---
 

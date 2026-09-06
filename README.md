@@ -96,6 +96,9 @@ pip install -r requirements.txt
 # 以开发模式安装该包
 pip install -e .
 
+# 如需运行 make check（flake8 / mypy / pytest）
+pip install -r requirements-dev.txt
+
 # 如需 Selenium / Playwright 登录辅助
 pip install -e ".[automation]"
 ```
@@ -144,6 +147,12 @@ python -m src.pipeline analyze --companies examples/company_list.csv --years 202
 # 确认当前工作结束并清理缓存，仅保留 streaming audit 留档
 python -m src.pipeline finish-work --confirm-work-complete
 
+# 流式分析：一次只保留一份 PDF，并把每个任务的结果写进台账
+python -m src.pipeline analyze --companies examples/company_list.csv --years 2020-2022 --streaming
+
+# 中断后续跑：跳过台账里已 ok 的任务，汇总表依然覆盖全部请求
+python -m src.pipeline analyze --companies examples/company_list.csv --years 2020-2022 --streaming --resume
+
 # 解析已有的 PDFs
 python -m src.pipeline parse --input data/raw/ --output data/parsed/
 ```
@@ -172,6 +181,54 @@ export SUPABASE_SERVICE_ROLE_KEY="<server-only-secret>"
 
 先应用 [`supabase/migrations/20260710170119_financial_metrics_cache.sql`](supabase/migrations/20260710170119_financial_metrics_cache.sql)。迁移启用 RLS、撤销 `anon` 与 `authenticated` 权限，仅授予 `service_role` 访问缓存表；如项目已配置 `rls_auto_enable` 事件触发器，也会撤销其对外 RPC 执行权限。Supabase 暂不可用时，后端会记录警告并直接使用 AKShare，不会中断分析任务。
 
+## Web 任务生命周期
+
+后端一次只运行一个任务。任务卡住时，除重启服务外有两条出路：
+
+```bash
+# 主动取消：终止 worker 进程并释放任务槽位
+curl -X POST http://localhost:8000/jobs/<job_id>/cancel
+
+# 看门狗：单个任务的最长墙钟时间，超时自动终止
+export JOB_TIMEOUT_SECONDS=10800   # 默认 3 小时；设为 0 关闭
+```
+
+取消是异步的：接口只置位并立即返回 `202`，实际终止由 pump 线程完成，最终状态通过 SSE 的 `status: cancelled` 事件和 `GET /jobs/{id}` 反映出来。取消属于正常终止，不产生 `error` 事件；超时算失败，会在 `error` 事件里带上超时原因。已结束的任务（`done` / `error` / `cancelled`）再取消返回 `409`，不存在的任务返回 `404`。
+
+## 流式任务台账
+
+流式运行的结果在导出之前只存在于内存里，任务被中断（Ctrl-C、`/cancel`、看门狗超时）就会同时丢掉已完成的工作和失败原因。`run_streaming` 因此为每个任务写一条台账，**逐任务落盘**，不做批量缓冲。
+
+默认路径 `data/results/streaming_manifest.json`，可用 `streaming.manifest_path` 覆盖。
+
+```bash
+# 看这一轮的成败分布
+python -c "import json,collections;print(collections.Counter(v['status'] for v in json.load(open('data/results/streaming_manifest.json')).values()))"
+
+# 查某个任务为什么失败
+python -c "import json;print(json.load(open('data/results/streaming_manifest.json'))['600000/2021/annual'])"
+```
+
+状态是穷尽且互斥的，每个任务必落其一：
+
+| 状态 | 含义 |
+|---|---|
+| `ok` | 分析成功，条目里带完整结果字典 |
+| `no_announcements` | 巨潮没返回该年该类型的公告 |
+| `query_error` | 查询公告时抛异常（不会中断整轮，其余任务继续） |
+| `no_url` | 公告里没有可下载地址 |
+| `download_failed` | PDF 下载失败 |
+| `no_text` | 解析后没有可用文本 |
+| `process_error` | 处理过程中抛异常，条目里带 `类型: 消息` |
+
+`ok` 条目保存完整结果字典，所以续跑不必重新下载就能导出覆盖全部请求的汇总表：
+
+```bash
+python -m src.pipeline analyze --companies examples/company_list.csv --years 2020-2022 --streaming --resume
+```
+
+`resume` 默认关闭。Web 任务从不续跑——否则重复提交同一批参数会被旧台账判成空跑，看起来像是静默失败。台账写入走 `<文件>.tmp` + 原子重命名，避免进程在写入中途被杀后留下一份解析不了的台账。
+
 ## 配置
 
 编辑 `config.yaml` 来自定义：
@@ -186,7 +243,7 @@ downloader:
 
 parser:
   pdf_engine: "pdfplumber"
-  max_saved_reports: 10
+  max_saved_reports: null   # null = 不裁剪；设为整数则运行结束后只保留最近 N 份
   use_ocr: false
   ocr_language: "chi_sim"
 
@@ -456,7 +513,7 @@ pytest --cov=src tests/
 ### 内存问题
 
 * **问题**：大批量 PDF 处理造成内存不足
-* **解决**：分批处理、增加系统内存或使用流式处理；默认仅保留最近 10 份解析文本目录，流式审查副本也只保留最近 10 份
+* **解决**：分批处理、增加系统内存或使用流式处理。解析文本目录默认不裁剪（`parser.max_saved_reports` / `streaming.max_audit_reports` 均为 `null`），裁剪只在整轮运行结束后执行一次；若把上限设得比本轮报告数还小，汇总表中被裁剪行的 `text_path` 会指向已删除的目录
 
 ### 验证码拦截
 

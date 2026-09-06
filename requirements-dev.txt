@@ -1,0 +1,23 @@
+# Lint, type-check and test tools. Not installed in the runtime image.
+#
+#   make lint   -> flake8 + mypy      (config: .flake8, mypy.ini)
+#   make test   -> pytest tests/
+#   make check  -> both
+#
+# Install with:  pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# --- Test -------------------------------------------------------------------
+pytest>=7.4,<10
+pytest-cov>=4.1,<8          # make test-cov
+httpx>=0.25,<1              # fastapi.testclient requires it; not a runtime dep
+
+# --- Lint / type-check ------------------------------------------------------
+flake8>=6.1,<8
+mypy>=1.6,<2
+
+# --- Formatting / hooks -----------------------------------------------------
+black>=23.10,<27            # make format
+pre-commit>=3.5,<5          # see INSTALLATION.md
+setuptools>=80.6,<83        # setup.py / pip install -e .

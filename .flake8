@@ -1,0 +1,16 @@
+[flake8]
+# The codebase is written to a wide limit; flake8's 79-char default would flag
+# most of it as noise. 120 still catches genuinely long lines.
+max-line-length = 120
+
+exclude =
+    .git,
+    .venv,
+    __pycache__,
+    .mypy_cache,
+    .pytest_cache,
+    build,
+    dist,
+    *.egg-info,
+    data,
+    logs

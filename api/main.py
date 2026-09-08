@@ -9,9 +9,19 @@ Routes:
                                   replays history for late connections
   GET  /jobs/{id}/result          download the master_summary xlsx
 
+  GET  /audit/coverage            finaudit: what data is actually covered
+  POST /audit/answer              finaudit: one question -> one figure + evidence
+                                  Registered only when the finaudit payload is
+                                  present AND FINAUDIT_API_TOKEN is set.
+                                  See api/audit_mount.py -- it is deployed here,
+                                  not developed here.
+
 Auth:
   Set API_TOKEN in the environment to require Authorization: Bearer <token>
   on every /jobs* route. Unset/empty means anonymous (local dev).
+
+  /audit/* is separate and fail-closed: it wants X-Finaudit-Token matching
+  FINAUDIT_API_TOKEN, and without that variable the routes do not exist.
 
 Run locally:
   uvicorn api.main:app --reload --port 8000
@@ -33,6 +43,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
+from .audit_mount import mount_audit_routes
 from .runner import (
     JobAlreadyRunning,
     JobSpec,
@@ -65,6 +76,11 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+# Second, unrelated service sharing this container. No-op unless its payload
+# was copied in and FINAUDIT_API_TOKEN is set; see api/audit_mount.py.
+mount_audit_routes(app)
 
 
 bearer_scheme = HTTPBearer(auto_error=False)

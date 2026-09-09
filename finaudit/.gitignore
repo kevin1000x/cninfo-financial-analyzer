@@ -1,0 +1,9 @@
+# The payload is deploy-time content. It must never be committed here --
+# committing it would create a second copy of another project's source with
+# no answer to "which one is authoritative".
+#
+# So: ignore everything in this directory, then re-admit only the two files
+# that describe the mount point itself.
+*
+!.gitignore
+!README.md

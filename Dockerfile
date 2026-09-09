@@ -43,6 +43,19 @@ COPY config.yaml ./
 COPY examples/ ./examples/
 COPY data/dictionaries/ ./data/dictionaries/
 
+# Second service sharing this container (see api/audit_mount.py). In this
+# repository `finaudit/` holds only a README; the deploy snapshot pushed to the
+# Space replaces it with the real payload. Either way this COPY succeeds and the
+# app starts -- the routes are registered only if the packages actually import.
+#
+# No pip install: finaudit's sole third-party import is PyYAML, already above.
+#
+# The directory shape inside finaudit/ is load-bearing, not cosmetic: that
+# service derives its data root from its own module path (src/service/api.py
+# -> three parents up), so the payload must keep its src/ level with
+# metrics/ and data/ as siblings of it. PYTHONPATH points at src/, not here.
+COPY finaudit/ /app/finaudit/
+
 # Writable runtime dirs (ephemeral on HF Spaces — restart wipes them, by design)
 RUN mkdir -p data/raw data/parsed data/results data/_web_jobs data/parsed_text logs
 
@@ -52,6 +65,7 @@ USER user
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/finaudit/src \
     PORT=7860
 
 EXPOSE 7860

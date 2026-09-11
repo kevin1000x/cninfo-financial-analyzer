@@ -26,7 +26,13 @@ Nothing measurable. finaudit's only third-party import is PyYAML, already a
 dependency here, and its four top-level packages (agent, semantic_layer,
 service, extractor) collide with nothing this app imports. The payload is
 ~770 KB of Python and YAML; it parses no PDFs and opens no sockets except
-the one optional model call below.
+the optional model calls below.
+
+One correction to the sentence above, 2026-09-11: "the one optional model
+call" was accurate while /answer was the only route. /verify fans out -- one
+request walks up to 24 claims, each of which may make its own model call.
+Upstream caps the count; this file keeps every such call off the event loop.
+See the note on the /verify handler.
 
 Auth is deliberately *not* shared
 ---------------------------------
@@ -75,6 +81,7 @@ def mount_audit_routes(app: FastAPI) -> bool:
             authorized,
             coverage_endpoint,
             presented_token,
+            verify_endpoint,
         )
     except ImportError as exc:
         logger.info(f"finaudit payload not present; {PREFIX}/* disabled ({exc})")
@@ -128,6 +135,40 @@ def mount_audit_routes(app: FastAPI) -> bool:
         code, body = await run_in_threadpool(answer_endpoint, payload)
         return JSONResponse(body, status_code=code)
 
+    @router.post("/verify")
+    async def verify(request: Request):
+        """Check a pasted conclusion, claim by claim.
+
+        This is the *entry point* upstream now leads with; /answer stays because
+        their frozen evaluation suites drive it and swapping it would move the
+        ground under their scores.
+
+        Why the threadpool hop matters more here than on /answer
+        --------------------------------------------------------
+        One /answer call does at most one blocking model call. One /verify call
+        splits a paragraph into claims and walks each one -- upstream caps that
+        at 24 per request (`agent.verify.MAX_CHECKABLE_CLAIMS`), so the worst
+        case is 24 sequential HTTPS calls, not one. Running that on the event
+        loop would stall every /jobs* SSE stream in this process for the whole
+        duration. The cap lives upstream; the hop lives here; neither alone is
+        enough.
+        """
+        denied = _denied(request)
+        if denied is not None:
+            return denied
+        try:
+            payload = await request.json()
+        except Exception:
+            # Same as /answer: upstream turns any non-dict into a 400 with a
+            # readable reason. Do not pre-judge it here.
+            payload = None
+
+        code, body = await run_in_threadpool(verify_endpoint, payload)
+        return JSONResponse(body, status_code=code)
+
     app.include_router(router)
-    logger.info(f"finaudit mounted: GET {PREFIX}/coverage, POST {PREFIX}/answer")
+    logger.info(
+        f"finaudit mounted: GET {PREFIX}/coverage, "
+        f"POST {PREFIX}/verify, POST {PREFIX}/answer"
+    )
     return True

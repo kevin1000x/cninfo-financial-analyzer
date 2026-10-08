@@ -35,7 +35,7 @@ def _send(conn, payload: dict) -> None:
         pass  # parent went away (test teardown / shutdown)
 
 
-def _cpu_spin_stub(seconds: float) -> tuple[str, int]:
+def _cpu_spin_stub(seconds: float, job_id: str) -> tuple[str, int]:
     """Test-only CPU load that mimics a long pdfplumber parse."""
     from loguru import logger
 
@@ -47,7 +47,7 @@ def _cpu_spin_stub(seconds: float) -> tuple[str, int]:
     while time.monotonic() < deadline:
         for _ in range(200_000):
             x = (x * 31 + 7) % 999_999_937
-    out_dir = Path("data/results")
+    out_dir = Path("data/results/jobs") / job_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"master_summary_test_{uuid4().hex[:6]}.xlsx"
     pd.DataFrame([{"stock_code": "600519", "tone_raw": 0.1}]).to_excel(
@@ -57,7 +57,7 @@ def _cpu_spin_stub(seconds: float) -> tuple[str, int]:
     return str(out_file), 1
 
 
-def run_child(spec_dict: dict, conn) -> None:
+def run_child(spec_dict: dict, conn, job_id: str) -> None:
     """Entry point of the spawned worker process.
 
     Sends exactly one terminal event (done or error) followed by eof, then
@@ -87,10 +87,11 @@ def run_child(spec_dict: dict, conn) -> None:
     try:
         if test_mode == "cpu":
             seconds = float(os.environ.get("CNINFO_JOB_TEST_CPU_SECONDS", "3"))
-            result_path, rows = _cpu_spin_stub(seconds)
+            result_path, rows = _cpu_spin_stub(seconds, job_id)
         else:
             from api.runner import (
                 JobSpec,
+                _isolate_job_outputs,
                 _load_cninfo_cookies,
                 _resolve_financial_data_csv,
                 _write_companies_csv,
@@ -100,6 +101,7 @@ def run_child(spec_dict: dict, conn) -> None:
             spec = JobSpec(**spec_dict)
             cookies = _load_cninfo_cookies()
             pipeline = FinancialAnalysisPipeline(cookies=cookies)
+            _isolate_job_outputs(pipeline, job_id)
             companies_csv = _write_companies_csv(spec.company_codes)
             financial_data_csv = _resolve_financial_data_csv(spec)
 

@@ -1,0 +1,126 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+@import "tailwindcss";
+
+/*
+ * Semantic tokens (see DESIGN.md). Declared as plain custom properties so a
+ * single media query flips the whole theme; `@theme inline` makes generated
+ * utilities reference the vars directly instead of copying light-mode values.
+ */
+:root {
+  --canvas: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --fg: #18181b;
+  --fg-2: #52525b;
+  --fg-3: #71717a;
+  --fg-4: #a1a1aa;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --accent: #047857;
+  --accent-fg: #ffffff;
+  --accent-soft: #ecfdf5;
+  --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.03);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #09090b;
+    --surface: #111113;
+    --surface-2: #1b1b1f;
+    --fg: #fafafa;
+    --fg-2: #a1a1aa;
+    --fg-3: #71717a;
+    --fg-4: #52525b;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --accent: #34d399;
+    --accent-fg: #022c22;
+    --accent-soft: rgba(16, 185, 129, 0.1);
+    --shadow-panel: none;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-fg-4: var(--fg-4);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+
+  --font-sans:
+    "Inter Variable", system-ui, -apple-system, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, "SF Mono",
+    Menlo, Consolas, monospace;
+
+  --ease-out-expo: cubic-bezier(0.23, 1, 0.32, 1);
+
+  --animate-log-in: log-in 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@keyframes log-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+:root {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: var(--canvas);
+  color: var(--fg);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Terminal panel scrollbars: quiet, only when hovering/scrolling matters. */
+.log-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.log-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.log-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+.log-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

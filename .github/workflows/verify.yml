@@ -1,4 +1,4 @@
-name: backend-verify
+name: workbench-verify
 
 # push:main plus pull_request, rather than a bare [push, pull_request]: the
 # latter runs the suite twice for every commit on a branch that has an open PR.
@@ -8,6 +8,23 @@ on:
   pull_request:
 
 jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -36,3 +53,17 @@ jobs:
       # flake8 (.flake8) + mypy (mypy.ini) over src/ and api/, then pytest.
       - name: Lint, type-check and test
         run: make check
+
+      - uses: actions/checkout@v4
+        with:
+          repository: kevin1000x/finaudit-agent
+          ref: 85b0a6d9e0df3f98bee1b886d664772dd2f4a450
+          path: .finaudit-source
+          persist-credentials: false
+      - name: Prepare pinned FinAudit runtime
+        run: python scripts/prepare_finaudit.py --source .finaudit-source
+      - name: Verify imported runtime and coverage
+        run: |
+          PYTHONPATH=build/finaudit/src python -c "from service.api import coverage_endpoint; code, body = coverage_endpoint(); assert code == 200; print(body)"
+      - name: Verify complete image assembles
+        run: docker build -t cninfo-workbench:ci .

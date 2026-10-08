@@ -59,10 +59,12 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
+
+from .auth import require_audit_user
 
 PREFIX = "/audit"
 TOKEN_ENV = "FINAUDIT_API_TOKEN"
@@ -96,7 +98,7 @@ def mount_audit_routes(app: FastAPI) -> bool:
         )
         return False
 
-    router = APIRouter(prefix=PREFIX, tags=["audit"])
+    router = APIRouter(prefix=PREFIX, tags=["audit"], dependencies=[Depends(require_audit_user)])
 
     def _denied(request: Request):
         """None when the caller may proceed, else the 401 to return."""

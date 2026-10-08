@@ -2,7 +2,8 @@
 # Default usage (HF Spaces / docker run):
 #   docker build -t cninfo-analyzer .
 #   docker run -p 7860:7860 \
-#     -e API_TOKEN=... -e CNINFO_COOKIES_JSON='{"JSESSIONID":"..."}' \
+#     -e SUPABASE_URL=... -e SUPABASE_PUBLISHABLE_KEY=... \
+#     -e FINAUDIT_API_TOKEN=... \
 #     cninfo-analyzer
 #
 # CLI mode (override entrypoint):
@@ -43,18 +44,14 @@ COPY config.yaml ./
 COPY examples/ ./examples/
 COPY data/dictionaries/ ./data/dictionaries/
 
-# Second service sharing this container (see api/audit_mount.py). In this
-# repository `finaudit/` holds only a README; the deploy snapshot pushed to the
-# Space replaces it with the real payload. Either way this COPY succeeds and the
-# app starts -- the routes are registered only if the packages actually import.
-#
-# No pip install: finaudit's sole third-party import is PyYAML, already above.
-#
-# The directory shape inside finaudit/ is load-bearing, not cosmetic: that
-# service derives its data root from its own module path (src/service/api.py
-# -> three parents up), so the payload must keep its src/ level with
-# metrics/ and data/ as siblings of it. PYTHONPATH points at src/, not here.
-COPY finaudit/ /app/finaudit/
+# scripts/prepare_finaudit.py exports the exact release-lock.json commit.
+# A plain placeholder must never produce a seemingly healthy release image.
+COPY build/finaudit/ /app/finaudit/
+COPY release-lock.json /app/release-lock.json
+COPY deploy/verify_finaudit_payload.py /tmp/verify_finaudit_payload.py
+RUN python /tmp/verify_finaudit_payload.py /app/finaudit /app/release-lock.json
+RUN PYTHONPATH=/app/finaudit/src python -c \
+    "from service.api import coverage_endpoint; code, body = coverage_endpoint(); assert code == 200 and body['counts']['real'] > 0"
 
 # Writable runtime dirs (ephemeral on HF Spaces — restart wipes them, by design)
 RUN mkdir -p data/raw data/parsed data/results data/_web_jobs data/parsed_text logs
@@ -66,6 +63,8 @@ USER user
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/finaudit/src \
+    AUTH_MODE=supabase \
+    REQUIRE_AUDIT=1 \
     PORT=7860
 
 EXPOSE 7860

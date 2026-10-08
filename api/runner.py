@@ -60,6 +60,7 @@ class JobSpec:
 class JobState:
     id: str
     spec: JobSpec
+    owner_id: Optional[str] = None
     status: str = "pending"  # pending | running | done | error | cancelled
     history: Deque[Dict[str, Any]] = field(default_factory=lambda: deque(maxlen=HISTORY_CAP))
     # Total events ever published, used as the SSE `id:` source. History
@@ -107,13 +108,13 @@ class JobRegistry:
         self._running_id: Optional[str] = None
         self._lock = threading.Lock()
 
-    def reserve(self, spec: JobSpec) -> JobState:
+    def reserve(self, spec: JobSpec, owner_id: Optional[str] = None) -> JobState:
         with self._lock:
             if self._running_id is not None:
                 running = self._jobs.get(self._running_id)
                 if running and running.status in {"pending", "running"}:
                     raise JobAlreadyRunning(self._running_id)
-            job = JobState(id=uuid4().hex, spec=spec)
+            job = JobState(id=uuid4().hex, spec=spec, owner_id=owner_id)
             self._jobs[job.id] = job
             self._running_id = job.id
             return job
@@ -332,6 +333,21 @@ def _resolve_financial_data_csv(spec: JobSpec) -> Optional[str]:
     return _write_financial_data_csv(metrics)
 
 
+def _isolate_job_outputs(pipeline, job_id: str) -> None:
+    """Keep each user's result and working artifacts outside other job runs.
+
+    CLI exports deliberately use second-resolution names. The web layer must
+    give them a private directory before writing, not copy/rename afterward:
+    a later task could already have overwritten the earlier owner's bytes.
+    """
+    output_dir = Path(pipeline.config["output"]["results_path"]) / "jobs" / job_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    pipeline.config["output"]["results_path"] = str(output_dir)
+    pipeline.intermediate_output_path = str(output_dir / "intermediate")
+    pipeline.streaming_manifest_path = str(output_dir / "streaming_manifest.json")
+    pipeline.streaming_audit_output_path = str(output_dir / "audit")
+
+
 def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
     sink_id = None
     job.status = "running"
@@ -350,6 +366,7 @@ def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
 
         cookies = _load_cninfo_cookies()
         pipeline = FinancialAnalysisPipeline(cookies=cookies)
+        _isolate_job_outputs(pipeline, job.id)
         companies_csv = _write_companies_csv(job.spec.company_codes)
         financial_data_csv = _resolve_financial_data_csv(job.spec)
 
@@ -391,7 +408,7 @@ def run_job(job: JobState, loop: asyncio.AbstractEventLoop) -> None:
         registry.release(job.id)
 
 
-def start_job(spec: JobSpec) -> JobState:
+def start_job(spec: JobSpec, owner_id: Optional[str] = None) -> JobState:
     """Reserve the single job slot, then execute the job.
 
     Default execution is an isolated worker PROCESS (spawn) so CPU-heavy
@@ -404,7 +421,7 @@ def start_job(spec: JobSpec) -> JobState:
     cross a spawn boundary).
 
     Raises JobAlreadyRunning if another job is currently active."""
-    job = registry.reserve(spec)
+    job = registry.reserve(spec, owner_id=owner_id)
     loop = asyncio.get_running_loop()
     # Resolve execution helpers via module globals so tests can monkeypatch
     # them (closure-captured references would defeat that).
@@ -440,7 +457,7 @@ def start_job_process(job: JobState, loop: asyncio.AbstractEventLoop) -> JobStat
     }
     proc = ctx.Process(
         target=run_child,
-        args=(spec_dict, send_conn),
+        args=(spec_dict, send_conn, job.id),
         name=f"job-{job.id[:8]}",
         daemon=True,
     )

@@ -1,0 +1,36 @@
+name: frontend-verify
+
+# push:main plus pull_request, rather than a bare [push, pull_request]: the
+# latter runs the suite twice for every commit on a branch that has an open PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # .node-version is already the local pin, so CI cannot drift from it.
+          node-version-file: .node-version
+          cache: npm
+
+      # package-lock.json is committed, so ci (not install) is what reproduces
+      # the verified tree.
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      # `npm run build` is `tsc -b && vite build`. tsc -b walks the project
+      # references, so this step is what type-checks the app, the Vite config
+      # and the Cloudflare Pages functions under functions/.
+      - name: Type-check and build
+        run: npm run build

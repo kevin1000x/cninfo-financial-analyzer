@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "backend_base": "e6f99c763b441c8a6ca035eaec26ed6de9e2b960",
+  "frontend_repository": "https://github.com/kevin1000x/cninfo-analyzer-web.git",
+  "frontend_base": "85680f022be174843639bc8e3dab99f83f2ca232",
+  "finaudit": {
+    "repository": "https://github.com/kevin1000x/finaudit-agent.git",
+    "commit": "85b0a6d9e0df3f98bee1b886d664772dd2f4a450"
+  }
+}

@@ -6,6 +6,8 @@ import {
 } from "@/lib/financialData";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui";
+import { StockPicker } from "./StockPicker";
+import { parseStockCodes, type Stock } from "@/lib/stocks";
 
 const REPORT_TYPES = ["annual", "semi_annual", "quarterly"] as const;
 type ReportType = (typeof REPORT_TYPES)[number];
@@ -34,13 +36,11 @@ const TNI_MODES = [
   },
 ];
 
-const STOCK_CODE_RE = /^\d{6}$/;
 const CURRENT_YEAR = new Date().getFullYear();
 const MIN_YEAR = 1990;
 
-// examples/financial_data.csv ships with 2020-2022 rows for four stocks.
-// Defaulting to that range means the very first submission with TNI=on
-// produces real TNI values (≥ 2 observations enable z-score).
+// Default to the latest three complete reporting years. Example data is fixed.
+const RECENT_YEARS = { start: CURRENT_YEAR - 3, end: CURRENT_YEAR - 1 };
 const EXAMPLES_TNI_YEARS = { start: 2020, end: 2022 };
 
 interface Props {
@@ -49,19 +49,27 @@ interface Props {
 }
 
 export function JobForm({ onSubmit, disabled }: Props) {
-  const [codesText, setCodesText] = useState("600000");
-  const [yearStart, setYearStart] = useState(EXAMPLES_TNI_YEARS.start);
-  const [yearEnd, setYearEnd] = useState(EXAMPLES_TNI_YEARS.end);
+  const [codesText, setCodesText] = useState("");
+  const [selectedStocks, setSelectedStocks] = useState<Stock[]>([]);
+  const [yearStart, setYearStart] = useState(RECENT_YEARS.start);
+  const [yearEnd, setYearEnd] = useState(RECENT_YEARS.end);
   const [reportType, setReportType] = useState<ReportType>("annual");
   const [tniMode, setTniMode] = useState<FinancialDataMode>("akshare");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const codes = useMemo(() => parseCodes(codesText), [codesText]);
+  const codes = useMemo(() => {
+    const batch = parseStockCodes(codesText);
+    return { valid: [...new Set([...selectedStocks.map(stock => stock.code), ...batch.valid])], invalid: batch.invalid };
+  }, [codesText, selectedStocks]);
+  // Match the catalogue market boundary even when codes are pasted directly.
+  const unsupported = codes.valid.filter(code => /^(?:4|8|92)/.test(code) || !/^[02369]\d{5}$/.test(code));
   const codeError = codes.invalid.length
     ? `不是 6 位数字代码：${codes.invalid.slice(0, 3).join(", ")}`
+    : unsupported.length
+      ? `暂不支持北交所或未识别市场的代码：${unsupported.slice(0, 3).join("、")}。请移除后再提交。`
     : codes.valid.length === 0
-      ? "至少填一个 6 位股票代码"
+      ? "搜索并选择公司，或粘贴一组股票代码"
       : null;
 
   const yearRangeError =
@@ -117,10 +125,14 @@ export function JobForm({ onSubmit, disabled }: Props) {
       onSubmit={handleSubmit}
       className="flex flex-col gap-6 rounded-[10px] border border-border bg-surface p-5 shadow-[var(--shadow-panel)] sm:p-6"
     >
+      <StockPicker selected={selectedStocks} onChange={setSelectedStocks} />
+      <details className="rounded-md border border-border p-3">
+        <summary className="cursor-pointer text-xs font-medium text-fg-2">批量粘贴股票代码</summary>
+        <div className="mt-3">
       <Field
         id="codes"
         label="股票代码"
-        hint="空格、逗号或换行分隔"
+        hint="支持沪深代码；北交所暂不可提交"
         error={codeError}
       >
         <textarea
@@ -151,11 +163,14 @@ export function JobForm({ onSubmit, disabled }: Props) {
           个
           {codes.invalid.length > 0 && (
             <span className="ml-2 text-red-600 dark:text-red-400">
-              已忽略 {codes.invalid.length} 个非法
+              请修正 {codes.invalid.length} 个无效输入
             </span>
           )}
         </div>
       </Field>
+        </div>
+      </details>
+      {codeError && <p className="text-xs text-fg-3">{codeError}</p>}
 
       <div className="grid gap-6 sm:grid-cols-2">
         <Field
@@ -238,7 +253,16 @@ export function JobForm({ onSubmit, disabled }: Props) {
                   name="tni"
                   value={m.value}
                   checked={selected}
-                  onChange={() => setTniMode(m.value)}
+                  onChange={() => {
+                    setTniMode(m.value);
+                    if (m.value === "examples") {
+                      setYearStart(EXAMPLES_TNI_YEARS.start);
+                      setYearEnd(EXAMPLES_TNI_YEARS.end);
+                    } else if (tniMode === "examples" && yearStart === EXAMPLES_TNI_YEARS.start && yearEnd === EXAMPLES_TNI_YEARS.end) {
+                      setYearStart(RECENT_YEARS.start);
+                      setYearEnd(RECENT_YEARS.end);
+                    }
+                  }}
                   className="sr-only"
                 />
                 <span
@@ -406,22 +430,4 @@ function Spinner() {
       />
     </svg>
   );
-}
-
-function parseCodes(raw: string): { valid: string[]; invalid: string[] } {
-  const tokens = raw.split(/[\s,;\n]+/).filter(Boolean);
-  const valid: string[] = [];
-  const invalid: string[] = [];
-  const seen = new Set<string>();
-  for (const tok of tokens) {
-    if (STOCK_CODE_RE.test(tok)) {
-      if (!seen.has(tok)) {
-        seen.add(tok);
-        valid.push(tok);
-      }
-    } else {
-      invalid.push(tok);
-    }
-  }
-  return { valid, invalid };
 }

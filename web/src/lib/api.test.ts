@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, cancelJob } from "./api";
 
+
+// Transport contract tests use an explicit auth boundary; real local .env files
+// must not decide whether these mocked HTTP requests are allowed. auth.test.ts
+// separately exercises configured, signed-out and token-bearing sessions.
+vi.mock("./auth", () => ({
+  authenticatedFetch: (input: RequestInfo | URL, init?: RequestInit) =>
+    fetch(input, { ...init, headers: new Headers(init?.headers) }),
+}));
+
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -25,6 +34,7 @@ describe("cancelJob", () => {
     });
     expect(fetchMock).toHaveBeenCalledWith("/api/proxy/jobs/abc123/cancel", {
       method: "POST",
+      headers: expect.any(Headers),
     });
   });
 

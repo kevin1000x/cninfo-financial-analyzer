@@ -128,3 +128,9 @@ Tailwind v4 `@theme inline` 定义在 `src/index.css`，语义色随 `prefers-co
 - 审查门：提交 UI 变更前过一遍 Vercel Web Interface Guidelines（`web-design-guidelines` skill 会拉取最新规则）。
 - 真实产品参考：Linear / Vercel Dashboard / Mercury / Stripe Dashboard 的数据密度与导航模式；灵感库 Refero、Mobbin、SaaSFrame、Godly（网页检索即可）。
 - 组件搜索：21st.dev MCP、shadcn/ui、Magic UI、React Bits —— 需要 MCP/API key，暂未接入；接入后在提交前先搜成熟组件再手写。
+
+## 2026-10-09 · 公司选择与账户
+
+延续研究工作台。主路径改为「搜公司 → 选范围 → 跑分析」。公司选择使用名称、六位代码与数据源拼音搜索，键盘上下选择、Enter 添加、Escape 关闭；已选公司以名称 + 等宽代码显示，可以移除。批量粘贴作为折叠的专家入口保留，支持中英文分隔符，提交前去重。目录搜索不代表核查数据覆盖。
+
+账户区域使用同一套墨绿、纸白与细边框，明确登录/注册/邮件待确认/配置缺失/退出错误。前端不保存密码；Supabase 管理会话。切换用户时重建任务视图，活动任务键按用户隔离。SSE 与下载统一经带用户 Bearer 的 fetch，不把令牌放进 URL。

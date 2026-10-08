@@ -12,6 +12,10 @@ The `api/` package wraps the existing `FinancialAnalysisPipeline` over HTTP for 
 - Tests must guard this: after a completed job, `job.history` types must be a subset of `{status, log, done, error, eof}`.
 
 ### 2. Local Vite dev does not inject Authorization
+- These legacy instructions apply to `AUTH_MODE=legacy` (the compatibility default). A multi-user deployment must explicitly use `AUTH_MODE=supabase` on both backend and proxy.
+- Supabase mode forwards the user's `Authorization: Bearer <access_token>` unchanged. `api/auth.py` validates it with `SUPABASE_URL/auth/v1/user`, using `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY`) as `apikey`; no service-role key is required and missing config fails closed.
+- A job's `owner_id` comes only from the validated user response. Status, SSE, result and cancellation must call `owned_job`; non-owners receive 404. Busy responses may include a job id only for the same owner. Legacy jobs have no owner and cannot be adopted by signed-in users.
+- `/audit/*` in Supabase mode needs BOTH the user Bearer and its separate `X-Finaudit-Token`. Never replace the user's Bearer with the service token in that mode. Fetch-based SSE carries the user Bearer; never put an access token in a stream URL.
 - The Vite dev server's `server.proxy` forwards `/api/proxy/*` to `http://localhost:8000` **without** adding any `Authorization` header.
 - Local development pattern: leave `API_TOKEN` unset on the FastAPI side; the backend then runs anonymously and the proxy needs no token.
 - Production pattern: `API_TOKEN` is set on the FastAPI side; the Cloudflare Pages Function (`functions/api/proxy/[[path]].ts`) injects the token from a Pages secret.
@@ -30,7 +34,12 @@ The Cloudflare Pages Function at `functions/api/proxy/[[path]].ts` must:
 - Preserve original `method`, `body`, and query string when forwarding to the tunnel.
 - For `/jobs/{id}/stream`: return `new Response(upstream.body, ...)` directly. Do **not** `await upstream.text()` or buffer — that breaks SSE.
 - Set only the headers that matter: `Content-Type` (e.g. `text/event-stream`), `Cache-Control: no-cache`. Do **not** blanket-copy upstream headers; hop-by-hop headers (`Connection`, `Transfer-Encoding`, etc.) must not leak through.
-- Inject `Authorization: Bearer <API_TOKEN>` from the Pages secret. The token never reaches the browser.
+- In legacy mode inject `Authorization: Bearer <API_TOKEN>` from the Pages secret. In Supabase mode preserve the user's Bearer for backend validation; the shared token must not substitute for a user.
+
+### Directory and readiness endpoints
+- `/stocks` is a public, cached CNINFO name/code/source-pinyin lookup; `src/stock_catalog.py` persists the last good snapshot and marks stale data. Failed refreshes back off, never replace good data with an empty list, and all upstream calls have a timeout with normal TLS verification.
+- Directory membership does not imply report or finaudit evidence coverage. `supported=false` marks Beijing/unknown markets because the current analyzer routes only Shanghai/Shenzhen; the UI must not submit those search results as supported analyses.
+- `/healthz` remains liveness. `/readyz` reports whether auth is configured and audit routes are mounted; `REQUIRE_AUDIT=1` makes a missing payload/token return 503. It contains no secret values and does not claim upstream connectivity was checked.
 
 ### 5. `report_types` whitelist
 `api.main.ALLOWED_REPORT_TYPES` is the **single source of truth** for what the API will accept. It must only contain values that the downstream pipeline can actually handle end-to-end. Currently:
@@ -54,6 +63,7 @@ ALLOWED_REPORT_TYPES = {"annual", "semi_annual", "quarterly"}
 - A **timeout** ends as `status="error"` and *does* emit an `error` event; nobody asked for it, so it is a failure.
 - `JOB_TIMEOUT_SECONDS=0` disables the watchdog. Read per job (not at import) so a malformed value fails `POST /jobs` loudly instead of silently disabling the timeout.
 - The thread runner (`JOB_RUNNER_MODE=thread`, test-only) has no killable worker, so `cancel` returns **409** rather than accepting a request it cannot honour.
+- Both web runners call `_isolate_job_outputs` before executing the pipeline: result files, intermediates, the streaming manifest and audit output live under `results_path/jobs/<job_id>/`. A shared timestamp filename is not an ownership boundary; never write to a common result path then copy afterward.
 
 ## Parsing & analysis conventions (src/ package)
 

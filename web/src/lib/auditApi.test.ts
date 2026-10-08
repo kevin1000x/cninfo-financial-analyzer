@@ -1,5 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { byCompany, verify, type CoverageRow } from "./auditApi";
+
+
+// Transport contract tests use an explicit auth boundary; real local .env files
+// must not decide whether these mocked HTTP requests are allowed. auth.test.ts
+// separately exercises configured, signed-out and token-bearing sessions.
+vi.mock("./auth", () => ({
+  authenticatedFetch: (input: RequestInfo | URL, init?: RequestInit) =>
+    fetch(input, { ...init, headers: new Headers(init?.headers) }),
+}));
+
+afterEach(() => vi.unstubAllGlobals());
 
 function row(p: Partial<CoverageRow>): CoverageRow {
   return {
@@ -83,7 +94,7 @@ describe("verify", () => {
    */
   function stubFetch(status: number, body: unknown) {
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    globalThis.fetch = ((url: string, init: RequestInit) => {
+    vi.stubGlobal("fetch", ((url: string, init: RequestInit) => {
       calls.push({ url, init });
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -91,7 +102,7 @@ describe("verify", () => {
           headers: { "Content-Type": "application/json" },
         }),
       );
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
     return calls;
   }
 

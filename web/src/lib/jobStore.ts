@@ -3,19 +3,20 @@
 // loses progress as long as uvicorn keeps running.
 
 const KEY = "cninfo:active-job-id";
+const storageKey = (owner: string) => owner === "legacy" ? KEY : `${KEY}:${owner}`;
 
-export function loadActiveJobId(): string | null {
+export function loadActiveJobId(owner = "legacy"): string | null {
   try {
-    return window.localStorage.getItem(KEY);
+    return window.localStorage.getItem(storageKey(owner));
   } catch {
     return null;
   }
 }
 
-export function saveActiveJobId(id: string | null): void {
+export function saveActiveJobId(id: string | null, owner = "legacy"): void {
   try {
-    if (id) window.localStorage.setItem(KEY, id);
-    else window.localStorage.removeItem(KEY);
+    if (id) window.localStorage.setItem(storageKey(owner), id);
+    else window.localStorage.removeItem(storageKey(owner));
   } catch {
     // ignore quota / private mode failures
   }

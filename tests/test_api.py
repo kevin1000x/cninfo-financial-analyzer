@@ -38,13 +38,14 @@ class FakePipeline:
     def __init__(self, *args, **kwargs) -> None:
         FakePipeline.last_init_kwargs = kwargs
         self.last_output_file: str | None = None
+        self.config = {"output": {"results_path": "data/results"}}
 
     def run_streaming(self, **kwargs) -> pd.DataFrame:
         FakePipeline.last_run_kwargs = kwargs
         from loguru import logger
         logger.info("fake: phase 1 starting")
         logger.info("fake: phase 2 finished")
-        out_dir = Path("data/results")
+        out_dir = Path(self.config["output"]["results_path"])
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / f"master_summary_test_{uuid4().hex[:6]}.xlsx"
         df = pd.DataFrame([{"stock_code": "600519", "tone_raw": 0.1}])

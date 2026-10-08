@@ -2,6 +2,8 @@
 .git
 .gitignore
 .gitattributes
+web/
+.finaudit-source/
 
 # Python virtualenvs (image installs its own deps)
 .venv

@@ -1,104 +1,64 @@
-// Same-origin proxy for the cninfo-analyzer-web frontend.
-//
-// Drop this file at: cninfo-analyzer-web/functions/api/proxy/[[path]].ts
-//
-// Cloudflare Pages Functions auto-mounts every file under functions/ as a
-// route. The [[path]] segment is a catch-all; e.g. a browser request to
-//   GET /api/proxy/jobs/abc/stream
-// reaches this handler with params.path = ["jobs", "abc", "stream"].
-//
-// Required Pages secrets (set via `wrangler pages secret put` or the
-// dashboard, never commit them):
-//   API_BASE   — the named-tunnel URL of the FastAPI backend, e.g.
-//                "https://cninfo-api.example.com" (no trailing slash)
-//   API_TOKEN  — matches what uvicorn was started with
-//
-// Behaviour:
-//   * preserves method, body, query string
-//   * for /jobs/{id}/stream returns upstream.body directly (ReadableStream
-//     pass-through; do NOT await response.text())
-//   * injects Authorization: Bearer <API_TOKEN>
-//   * sets only the response headers that matter; hop-by-hop headers
-//     never leak through
-//
-// The token only ever exists server-side; the browser never sees it.
-
+/** Same-origin API boundary. AUTH_MODE must match the backend deployment. */
 interface Env {
   API_BASE: string;
-  API_TOKEN: string;
+  AUTH_MODE?: "legacy" | "supabase";
+  API_TOKEN?: string;
+}
+interface PagesContext { request: Request; env: Env; params: { path: string[] } }
+
+function json(status: number, detail: string): Response {
+  return Response.json({ detail }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-interface PagesContext {
-  request: Request;
-  env: Env;
-  params: { path: string[] };
-}
+export const onRequest = async ({ request, env, params }: PagesContext): Promise<Response> => {
+  const mode = env.AUTH_MODE ?? "legacy";
+  if (!env.API_BASE || !["legacy", "supabase"].includes(mode) || (mode === "legacy" && !env.API_TOKEN)) {
+    return json(500, "分析服务尚未配置完成。");
+  }
+  const segments = params.path ?? [];
+  const path = segments.join("/");
+  // Never attach privileged credentials to arbitrary upstream paths.
+  const isPublic = path === "stocks" || path === "healthz";
+  const allowedMethod = isPublic ? "GET"
+    : path === "jobs" ? "POST"
+    : /^jobs\/[A-Za-z0-9_-]+\/cancel$/.test(path) ? "POST"
+    : /^jobs\/[A-Za-z0-9_-]+(?:\/(?:stream|result))?$/.test(path) ? "GET"
+    : null;
+  if (!allowedMethod) return json(404, "没有这个接口。");
+  if (request.method !== allowedMethod) return json(405, "不支持此请求方式。");
 
-const HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailers",
-  "transfer-encoding",
-  "upgrade",
-]);
+  const authorization = request.headers.get("Authorization");
+  if (mode === "supabase" && !isPublic && !/^Bearer\s+\S+$/i.test(authorization ?? "")) {
+    return json(401, "请先登录研究账户。");
+  }
+  const headers = new Headers();
+  for (const name of ["Content-Type", "Accept", "Last-Event-ID"]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  if (mode === "legacy") headers.set("Authorization", `Bearer ${env.API_TOKEN}`);
+  else if (authorization) headers.set("Authorization", authorization);
 
-export const onRequest = async (ctx: PagesContext): Promise<Response> => {
-  const { request, env, params } = ctx;
-
-  if (!env.API_BASE || !env.API_TOKEN) {
-    return new Response("proxy misconfigured: API_BASE / API_TOKEN missing", {
-      status: 500,
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${env.API_BASE.replace(/\/$/, "")}/${path}${new URL(request.url).search}`, {
+      method: request.method,
+      headers,
+      body: request.method === "GET" ? undefined : request.body,
+      // @ts-expect-error Cloudflare Workers supports streamed request bodies.
+      duplex: "half",
     });
+  } catch {
+    return json(502, "暂时无法连接分析服务，请稍后重试。");
   }
-
-  const upstreamPath = (params.path ?? []).join("/");
-  const url = new URL(request.url);
-  const upstreamUrl = `${env.API_BASE.replace(/\/$/, "")}/${upstreamPath}${url.search}`;
-
-  // Forward headers minus anything risky. Authorization is replaced.
-  const fwdHeaders = new Headers();
-  for (const [k, v] of request.headers.entries()) {
-    const key = k.toLowerCase();
-    if (HOP_BY_HOP.has(key)) continue;
-    if (key === "host" || key === "authorization" || key === "cookie") continue;
-    fwdHeaders.set(k, v);
+  const responseHeaders = new Headers({ "Cache-Control": "no-store" });
+  for (const name of ["Content-Type", "Content-Disposition", "Retry-After"]) {
+    const value = upstream.headers.get(name);
+    if (value) responseHeaders.set(name, value);
   }
-  fwdHeaders.set("Authorization", `Bearer ${env.API_TOKEN}`);
-
-  const upstream = await fetch(upstreamUrl, {
-    method: request.method,
-    headers: fwdHeaders,
-    body:
-      request.method === "GET" || request.method === "HEAD"
-        ? undefined
-        : request.body,
-    // @ts-expect-error — Cloudflare Workers fetch supports this option.
-    duplex: "half",
-  });
-
-  // SSE: stream upstream.body straight back. Don't buffer.
-  const isStream =
-    upstreamPath.endsWith("/stream") ||
-    upstream.headers.get("content-type")?.includes("text/event-stream");
-
-  const respHeaders = new Headers();
-  if (isStream) {
-    respHeaders.set("Content-Type", "text/event-stream; charset=utf-8");
-    respHeaders.set("Cache-Control", "no-cache");
-    respHeaders.set("X-Accel-Buffering", "no"); // disable nginx-style buffering if any
-  } else {
-    const ct = upstream.headers.get("content-type");
-    if (ct) respHeaders.set("Content-Type", ct);
-    const cd = upstream.headers.get("content-disposition");
-    if (cd) respHeaders.set("Content-Disposition", cd);
+  if (upstream.headers.get("Content-Type")?.includes("text/event-stream")) {
+    responseHeaders.set("Cache-Control", "no-cache, no-store");
+    responseHeaders.set("X-Accel-Buffering", "no");
   }
-
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: respHeaders,
-  });
+  return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
 };

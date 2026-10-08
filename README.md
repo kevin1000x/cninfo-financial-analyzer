@@ -1,5 +1,9 @@
 # CNINFO 金融文本分析器
 
+> 合仓试验入口：[INTEGRATION.md](INTEGRATION.md)。React 前端位于 `web/`，
+> Supabase 登录、股票搜索、任务用户隔离及固定版本 FinAudit 载荷构建均在该文档说明。
+> 此分支尚未部署；下方原后端说明保留作为功能参考。
+
 一个用于从 CNINFO（巨潮资讯网）下载、解析与分析中文公司年报的完整 Python 工具包。
 
 ---

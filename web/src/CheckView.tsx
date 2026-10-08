@@ -72,7 +72,7 @@ export function CheckView() {
   }, []);
 
   const pick = useCallback((code: string, year: number) => {
-    setText(`${code} ${year} 年的资产负债率是 17.98%`);
+    setText(`${code} ${year} 年的资产负债率是多少？`);
   }, []);
 
   const report = result?.report ?? null;
@@ -139,11 +139,7 @@ export function CheckView() {
               这是<span className="font-medium text-fg">连不上</span>
               ，不是「它核不了」—— 核不了会带着理由正常返回。
               <br />
-              本地开发时确认服务在跑：在 finaudit 仓库执行{" "}
-              <code className="rounded bg-surface-2 px-1 font-mono">
-                python -m service.api
-              </code>
-              ，然后重试。
+              请稍后重试。已输入的结论会保留在当前页面。
             </p>
           </div>
         ) : null}

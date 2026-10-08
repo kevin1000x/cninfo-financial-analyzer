@@ -1,3 +1,6 @@
+import { authRequired } from "@/lib/auth";
+import { useAuth } from "@/lib/authContext";
+import { AuthPanel } from "@/components/AuthPanel";
 import { useCallback, useEffect, useState } from "react";
 import { CheckView } from "@/CheckView";
 import { JobForm } from "@/components/JobForm";
@@ -8,8 +11,8 @@ import { createJob, getJob } from "@/lib/api";
 import { loadActiveJobId, saveActiveJobId } from "@/lib/jobStore";
 import type { CreateJobRequest, JobEvent } from "@/lib/types";
 
-// Two views, one site. They share a shell; they do NOT share a backend, a data
-// source, or a claim:
+// Two views share a shell and user authentication. Their routes and engines
+// remain separate within the integrated API:
 //
 //   批量分析   — cninfo pipeline behind /api/proxy/*. Stateful job runner,
 //                one job at a time, SSE.
@@ -50,6 +53,9 @@ const PIPELINE_STEPS = [
 ];
 
 function App() {
+  const { session } = useAuth();
+  const owner = session?.user.id ?? "legacy";
+  const canRun = !authRequired || !!session;
   const [view, setView] = useState<View>(readHash);
   const [jobId, setJobId] = useState<string | null>(null);
   // Lazy init: if no stored id, we're already in the "boot complete" state
@@ -57,7 +63,7 @@ function App() {
   // effect body. The async fetch path still flips this to true via setState
   // in an awaited callback, which is fine.
   const [bootChecked, setBootChecked] = useState<boolean>(
-    () => !loadActiveJobId(),
+    () => !canRun || !loadActiveJobId(owner),
   );
   const [final, setFinal] = useState<FinalState | null>(null);
 
@@ -74,7 +80,7 @@ function App() {
   // the backend still knows about it before reattaching the stream;
   // if the server restarted, drop the stale id silently.
   useEffect(() => {
-    const stored = loadActiveJobId();
+    const stored = canRun ? loadActiveJobId(owner) : null;
     if (!stored) return;
     let cancelled = false;
 
@@ -99,7 +105,7 @@ function App() {
           });
         }
       } catch {
-        saveActiveJobId(null);
+        saveActiveJobId(null, owner);
       } finally {
         if (!cancelled) setBootChecked(true);
       }
@@ -108,14 +114,14 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [owner, canRun]);
 
   const handleSubmit = useCallback(async (req: CreateJobRequest) => {
     const resp = await createJob(req);
-    saveActiveJobId(resp.job_id);
+    saveActiveJobId(resp.job_id, owner);
     setJobId(resp.job_id);
     setFinal(null);
-  }, []);
+  }, [owner]);
 
   const handleTerminal = useCallback(
     (_status: "done" | "error", payload: JobEvent) => {
@@ -139,19 +145,19 @@ function App() {
   );
 
   const handleReset = useCallback(() => {
-    saveActiveJobId(null);
+    saveActiveJobId(null, owner);
     setJobId(null);
     setFinal(null);
-  }, []);
+  }, [owner]);
 
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-10 border-b border-border bg-canvas/85 backdrop-blur-sm">
-        <div className="mx-auto flex h-12 w-full max-w-3xl items-center justify-between px-4">
+        <div className="mx-auto flex h-12 w-full max-w-4xl items-center justify-between px-4">
           <div className="flex items-center gap-2.5">
             <Logomark className="h-6 w-6" />
             <span className="text-sm font-semibold tracking-tight">
-              cninfo-analyzer
+              CNINFO 研究台
             </span>
           </div>
 
@@ -183,8 +189,9 @@ function App() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10">
-        {view === "audit" && <CheckView />}
+      <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-8">
+        <AuthPanel />
+        {view === "audit" && (canRun ? <CheckView /> : <p className="rounded-md border border-border p-5 text-sm text-fg-2">登录后可核查结论，并查看当前可用的公司与年份。</p>)}
 
         {/*
           `bootChecked` gates only the batch view: it is waiting to hear whether
@@ -200,7 +207,7 @@ function App() {
                   年报文本分析工作台
                 </h1>
                 <p className="mt-2 max-w-xl text-sm leading-relaxed text-fg-2 text-pretty">
-                  提交股票代码与年份范围，流水线自动完成公告下载、PDF
+                  搜索公司名称、代码或拼音，选择年份范围，自动完成公告下载、PDF
                   解析、情感与可读性测度、TNI 创新度计算，并导出 xlsx 汇总表。
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2">
@@ -211,7 +218,7 @@ function App() {
               </section>
             )}
 
-            {!jobId && <JobForm onSubmit={handleSubmit} />}
+            {!jobId && <JobForm onSubmit={handleSubmit} disabled={!canRun} />}
 
             {jobId && (
               <div className="flex flex-col gap-4">
@@ -273,11 +280,15 @@ function App() {
         )}
       </main>
 
-      <footer className="mx-auto w-full max-w-3xl px-4 pb-8 text-xs text-fg-4">
+      <footer className="mx-auto w-full max-w-4xl px-4 pb-8 text-xs text-fg-4">
         数据来源：巨潮资讯网（CNINFO）· 分析结果仅供研究参考
       </footer>
     </div>
   );
 }
 
-export default App;
+export default function SessionApp() {
+  const { session, ready } = useAuth();
+  if (!ready) return <p role="status" className="p-8 text-sm text-fg-3">正在恢复研究账户…</p>;
+  return <App key={session?.user.id ?? "guest"} />;
+}

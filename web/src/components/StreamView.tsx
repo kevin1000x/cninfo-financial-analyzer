@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JobEvent, JobStatus } from "@/lib/types";
-import { ApiError, cancelJob, streamUrl } from "@/lib/api";
+import { ApiError, cancelJob, streamJob } from "@/lib/api";
 import { advanceEventId } from "@/lib/sse";
 import { cn } from "@/lib/utils";
 import { Button, Chip } from "@/components/ui";
@@ -60,67 +60,28 @@ export function StreamView({ jobId, onTerminal }: Props) {
   const pinnedRef = useRef(true);
 
   useEffect(() => {
-    const url = streamUrl(jobId);
-    const es = new EventSource(url);
-
+    const controller = new AbortController();
     const push = (event: JobEvent) => {
-      setEvents((prev) => [...prev, { key: seq.current++, event }]);
+      setEvents(prev => [...prev, { key: seq.current++, event }]);
     };
-
-    const handler = (raw: MessageEvent<string>, fallbackType: string) => {
-      // EventSource replays the whole history on every auto-reconnect.
-      const nextId = advanceEventId(raw.lastEventId, lastEventId.current);
+    void streamJob(jobId, controller.signal, raw => {
+      const nextId = advanceEventId(raw.id, lastEventId.current);
       if (nextId === null) return;
       lastEventId.current = nextId;
-
       try {
         const data = JSON.parse(raw.data) as JobEvent;
         push(data);
         if (data.type === "status") setStatus(data.status as JobStatus);
-        if (data.type === "done") {
-          setStatus("done");
-          onTerminal("done", data);
-        }
-        if (data.type === "error") {
-          setStatus("error");
-          onTerminal("error", data);
-        }
-        if (data.type === "eof") es.close();
+        if (data.type === "done") { setStatus("done"); onTerminal("done", data); }
+        if (data.type === "error") { setStatus("error"); onTerminal("error", data); }
+        if (data.type === "eof") return false;
       } catch {
-        push({
-          type: "log",
-          level: "WARN",
-          message: `unparsed ${fallbackType}: ${raw.data}`,
-          module: "frontend",
-          ts: new Date().toISOString(),
-        });
+        push({ type: "log", level: "WARN", message: `无法解析 ${raw.event} 事件`, module: "frontend", ts: new Date().toISOString() });
       }
-    };
-
-    // sse-starlette delivers each custom event name as a separate type to
-    // addEventListener. The native 'error' channel and our server-emitted
-    // 'error' event collide on the type signature; we accept Event and
-    // narrow to MessageEvent via duck-typing (presence of `data`).
-    const wrap = (fallbackType: string) => (e: Event) => {
-      if ("data" in e && typeof (e as MessageEvent<string>).data === "string") {
-        handler(e as MessageEvent<string>, fallbackType);
-      }
-    };
-    es.addEventListener("status", wrap("status"));
-    es.addEventListener("log", wrap("log"));
-    es.addEventListener("done", wrap("done"));
-    es.addEventListener("error", wrap("error"));
-    es.addEventListener("eof", wrap("eof"));
-
-    es.onerror = () => {
-      // EventSource auto-reconnects on transient drops; surface persistent
-      // errors only when the connection is fully closed.
-      if (es.readyState === EventSource.CLOSED) {
-        setStreamError("SSE 连接已关闭");
-      }
-    };
-
-    return () => es.close();
+    }, setStreamError).catch(error => {
+      if (!controller.signal.aborted) setStreamError(error instanceof Error ? error.message : "无法连接任务事件流。");
+    });
+    return () => controller.abort();
   }, [jobId, onTerminal]);
 
   const active = status === "pending" || status === "running";

@@ -24,16 +24,16 @@
 //
 // Why two tokens and two headers:
 //
-// The Space is public, so today there is no platform gate and AUDIT_PLATFORM_TOKEN
-// is unset — we send our own token on both headers and the service reads it from
-// `X-Finaudit-Token`. The split exists for the other case: a *private* Space
-// gates on `Authorization: Bearer <hf_token>`, and two tokens cannot share one
-// header. Keeping them apart now means that switch is a variable, not a code
-// change, on the day it is needed.
+// The current Space is public, so AUDIT_PLATFORM_TOKEN stays unset. Legacy mode
+// can use Authorization for a platform/service token; Supabase mode reserves
+// that header for the current user and rejects a conflicting platform token.
 //
-// Neither token ever reaches the browser.
+// Service/platform tokens never reach the browser. In AUTH_MODE=supabase,
+// Authorization carries the user session, X-Finaudit-Token carries the service
+// credential, and AUDIT_PLATFORM_TOKEN must be absent to avoid overwriting user auth.
 
 interface Env {
+  AUTH_MODE?: "legacy" | "supabase";
   AUDIT_API_BASE: string;
   AUDIT_API_TOKEN: string;
   AUDIT_PLATFORM_TOKEN?: string;
@@ -65,6 +65,10 @@ const ALLOWED = new Set(["coverage", "answer", "verify"]);
 export const onRequest = async (ctx: PagesContext): Promise<Response> => {
   const { request, env, params } = ctx;
 
+  const mode = env.AUTH_MODE ?? "legacy";
+  if (!["legacy", "supabase"].includes(mode) || (mode === "supabase" && env.AUDIT_PLATFORM_TOKEN)) {
+    return json(500, { detail: "核查服务认证配置不一致。" });
+  }
   if (!env.AUDIT_API_BASE || !env.AUDIT_API_TOKEN) {
     return json(500, {
       detail: "proxy misconfigured: AUDIT_API_BASE / AUDIT_API_TOKEN missing",
@@ -77,8 +81,14 @@ export const onRequest = async (ctx: PagesContext): Promise<Response> => {
       detail: "只有 GET /coverage、POST /verify 与 POST /answer",
     });
   }
-  if (request.method !== "GET" && request.method !== "POST") {
+  const method = segments[0] === "coverage" ? "GET" : "POST";
+  if (request.method !== method) {
     return json(405, { detail: "只接受 GET 与 POST" });
+  }
+
+  const authorization = request.headers.get("Authorization");
+  if (mode === "supabase" && !/^Bearer\s+\S+$/i.test(authorization ?? "")) {
+    return json(401, { detail: "请先登录研究账户。" });
   }
 
   const url = new URL(request.url);
@@ -95,11 +105,10 @@ export const onRequest = async (ctx: PagesContext): Promise<Response> => {
   }
   // Our own token always goes on our own header.
   fwdHeaders.set("X-Finaudit-Token", env.AUDIT_API_TOKEN);
-  // `Authorization` belongs to the platform gate when there is one; otherwise
-  // it carries our token too, for a host that only understands bearer auth.
+  // Supabase mode preserves user auth; legacy mode retains the old platform gate.
   fwdHeaders.set(
     "Authorization",
-    `Bearer ${env.AUDIT_PLATFORM_TOKEN || env.AUDIT_API_TOKEN}`,
+    mode === "supabase" ? authorization! : `Bearer ${env.AUDIT_PLATFORM_TOKEN || env.AUDIT_API_TOKEN}`,
   );
 
   let upstream: Response;

@@ -1,3 +1,4 @@
+import { authenticatedFetch } from "./auth";
 // Client for the finaudit answering service, always hitting `/api/audit/...`.
 //
 // This is a SECOND backend, separate from the cninfo pipeline behind
@@ -169,14 +170,14 @@ async function asJson<T>(resp: Response): Promise<T> {
 }
 
 export async function getCoverage(signal?: AbortSignal): Promise<Coverage> {
-  return asJson<Coverage>(await fetch(`${BASE}/coverage`, { signal }));
+  return asJson<Coverage>(await authenticatedFetch(`${BASE}/coverage`, { signal }));
 }
 
 export async function ask(
   question: string,
   signal?: AbortSignal,
 ): Promise<AnswerResponse> {
-  const resp = await fetch(`${BASE}/answer`, {
+  const resp = await authenticatedFetch(`${BASE}/answer`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // Only a question string goes over this wire. There is deliberately no
@@ -203,7 +204,7 @@ export async function verify(
   text: string,
   signal?: AbortSignal,
 ): Promise<VerifyResponse> {
-  const resp = await fetch(`${BASE}/verify`, {
+  const resp = await authenticatedFetch(`${BASE}/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // One string. No file upload, no CSV, no pasted spreadsheet.

@@ -3,6 +3,8 @@ FastAPI entrypoint for the cninfo-analyzer web frontend.
 
 Routes:
   GET  /healthz                   liveness probe (no auth)
+  GET  /readyz                    auth configuration and audit mount readiness
+  GET  /stocks?q=...              cached public name/code/source-pinyin directory
   POST /jobs                      create a streaming analysis job
   GET  /jobs/{id}                 job status snapshot
   GET  /jobs/{id}/stream          SSE: log lines + done/error events,
@@ -18,10 +20,14 @@ Routes:
                                   not developed here.
 
 Auth:
+  AUTH_MODE=supabase validates user access tokens with Supabase Auth and scopes
+  every /jobs* operation to that user's id. /audit/* also requires that user
+  session in addition to its separate X-Finaudit-Token service credential.
+  AUTH_MODE=legacy (default) retains the existing shared-token behavior:
   Set API_TOKEN in the environment to require Authorization: Bearer <token>
   on every /jobs* route. Unset/empty means anonymous (local dev).
 
-  /audit/* is separate and fail-closed: it wants X-Finaudit-Token matching
+  /audit/* is always fail-closed: it wants X-Finaudit-Token matching
   FINAUDIT_API_TOKEN, and without that variable the routes do not exist.
 
 Run locally:
@@ -37,18 +43,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from .audit_mount import mount_audit_routes
+from .auth import Principal, auth_configured, require_user
+from src.stock_catalog import CatalogUnavailable, StockCatalog
 from .runner import (
     JobAlreadyRunning,
     JobNotCancellable,
     JobSpec,
+    JobState,
     registry,
     start_job,
     subscribe,
@@ -82,24 +90,18 @@ app.add_middleware(
 
 # Second, unrelated service sharing this container. No-op unless its payload
 # was copied in and FINAUDIT_API_TOKEN is set; see api/audit_mount.py.
-mount_audit_routes(app)
+app.state.audit_enabled = mount_audit_routes(app)
 
 
-bearer_scheme = HTTPBearer(auto_error=False)
+stock_catalog = StockCatalog(Path(os.environ.get("STOCK_CATALOG_CACHE", "data/dictionaries/stock_catalog.json")))
 
 
-def require_token(
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-) -> None:
-    """Bearer token gate. Reads API_TOKEN at request time so test fixtures
-    can flip it via monkeypatch.setenv between requests."""
-    expected = os.environ.get("API_TOKEN", "").strip()
-    if not expected:
-        return
-    if creds is None or not creds.credentials:
-        raise HTTPException(status_code=401, detail="missing bearer token")
-    if creds.credentials != expected:
-        raise HTTPException(status_code=403, detail="invalid token")
+def owned_job(job_id: str, principal: Principal) -> JobState:
+    job = registry.get(job_id)
+    if not job or job.owner_id != principal.user_id:
+        # A guessed id must not disclose whether another user's job exists.
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
 
 
 def _max_year() -> int:
@@ -203,10 +205,32 @@ def healthz() -> dict:
     return {"ok": True}
 
 
+@app.get("/readyz")
+def readyz():
+    """Configuration readiness, deliberately separate from liveness."""
+    audit_required = os.environ.get("REQUIRE_AUDIT", "0").strip().lower() in {"1", "true"}
+    checks = {
+        "auth_configured": auth_configured(),
+        "audit_mounted": bool(app.state.audit_enabled),
+        "audit_required": audit_required,
+    }
+    ready = checks["auth_configured"] and (not audit_required or checks["audit_mounted"])
+    return JSONResponse({"ready": ready, "checks": checks}, status_code=200 if ready else 503)
+
+
+@app.get("/stocks")
+def search_stocks(q: str = Query("", max_length=64), limit: int = Query(20, ge=1, le=50)) -> dict:
+    """Public cached directory; financial tasks still require the configured auth."""
+    try:
+        return stock_catalog.search(q, limit)
+    except CatalogUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
 @app.post("/jobs", response_model=CreateJobResponse)
 async def create_job(
     req: CreateJobRequest,
-    _: None = Depends(require_token),
+    principal: Principal = Depends(require_user),
 ) -> CreateJobResponse:
     spec = JobSpec(
         company_codes=req.company_codes,
@@ -218,23 +242,22 @@ async def create_job(
         save_parsed_text=req.save_parsed_text,
     )
     try:
-        job = start_job(spec)
+        job = start_job(spec, owner_id=principal.user_id)
     except JobAlreadyRunning as exc:
+        detail = {"error": "another job is already running"}
+        active = registry.get(exc.running_id)
+        if active and active.owner_id == principal.user_id:
+            detail["running_job_id"] = exc.running_id
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "error": "another job is already running",
-                "running_job_id": exc.running_id,
-            },
+            detail=detail,
         )
     return CreateJobResponse(job_id=job.id, status=job.status)
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str, _: None = Depends(require_token)) -> dict:
-    job = registry.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+def get_job(job_id: str, principal: Principal = Depends(require_user)) -> dict:
+    job = owned_job(job_id, principal)
     return {
         "id": job.id,
         "status": job.status,
@@ -252,10 +275,8 @@ def get_job(job_id: str, _: None = Depends(require_token)) -> dict:
 
 
 @app.get("/jobs/{job_id}/stream")
-async def stream_job(job_id: str, _: None = Depends(require_token)):
-    job = registry.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+async def stream_job(job_id: str, principal: Principal = Depends(require_user)):
+    job = owned_job(job_id, principal)
 
     async def event_source():
         # Snapshot history and register subscriber atomically — no `await`
@@ -308,10 +329,8 @@ async def stream_job(job_id: str, _: None = Depends(require_token)):
 
 
 @app.get("/jobs/{job_id}/result")
-def download_result(job_id: str, _: None = Depends(require_token)):
-    job = registry.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+def download_result(job_id: str, principal: Principal = Depends(require_user)):
+    job = owned_job(job_id, principal)
     if job.status != "done" or not job.result_path:
         raise HTTPException(
             status_code=409, detail=f"job not ready: status={job.status}"
@@ -329,15 +348,13 @@ def download_result(job_id: str, _: None = Depends(require_token)):
 
 
 @app.post("/jobs/{job_id}/cancel", status_code=202)
-def cancel_job(job_id: str, _: None = Depends(require_token)) -> dict:
+def cancel_job(job_id: str, principal: Principal = Depends(require_user)) -> dict:
     """Terminate a running job and free the single job slot.
 
     202, not 200: the runner only sets a flag here. The pump thread kills the
     worker, publishes the terminal `cancelled` status and releases the slot,
     so the outcome arrives over SSE and via GET /jobs/{id}."""
-    job = registry.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = owned_job(job_id, principal)
     try:
         registry.cancel(job)
     except JobNotCancellable as exc:

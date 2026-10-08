@@ -12,8 +12,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -100,6 +100,10 @@ logs/**/*
 # ===========================
 config.local.yaml
 cookies.json
+.env*
+!.env.example
+!web/.env.example
+.finaudit-source/
 
 # ===========================
 # Large / Binary files

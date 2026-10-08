@@ -5,7 +5,7 @@ afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.resetModules(); 
 
 it("returns email verification and recovery to the exact production root", async () => {
   const { AUTH_REDIRECT_URL } = await import("./auth");
-  expect(AUTH_REDIRECT_URL).toBe("https://cninfo-analyzer-web.pages.dev/");
+  expect(AUTH_REDIRECT_URL).toBe("https://app.rgt7611lab.dpdns.org/");
   const callback = new URL(AUTH_REDIRECT_URL);
   expect(callback.hash).toBe("");
   expect(callback.search).toBe("");

@@ -30,8 +30,10 @@ original bytes; workshop records and raw PDFs are excluded.
 
 Cloudflare Pages continues to serve the frontend, and the existing HF Space
 continues to host the API. A monorepo does not require moving either host.
-The canonical website is **https://cninfo-analyzer-web.pages.dev/**; the API is
-**https://rgt07-cninfo-financial-analyzer.hf.space**. Local previews are optional
+The canonical website is **https://app.rgt7611lab.dpdns.org/**; the API is
+**https://rgt07-cninfo-financial-analyzer.hf.space**.
+`https://cninfo-analyzer-web.pages.dev/` remains the Cloudflare platform alias,
+not the canonical Auth callback. Local previews are optional
 development tools and are not the production login destination.
 
 | Setting | Value |
@@ -84,7 +86,7 @@ AUDIT_API_TOKEN=SERVER_SIDE_ONLY
 header must reach the API; a shared server token must not replace it.
 
 In Supabase Auth URL Configuration, set **Site URL** to
-`https://cninfo-analyzer-web.pages.dev/` and set the **Redirect URLs** allowlist to
+`https://app.rgt7611lab.dpdns.org/` and set the **Redirect URLs** allowlist to
 that same exact URL. Do not add localhost, preview wildcards, or `#/audit` for
 the production project. Both registration confirmation and password recovery
 use this root URL explicitly. Supabase processes callback tokens with
@@ -92,8 +94,9 @@ use this root URL explicitly. Supabase processes callback tokens with
 callback fragment to a view route. After `PASSWORD_RECOVERY`, users set their
 new password through `updateUser`.
 
-Enable email/password sign-up, keep email verification enabled, and configure
-production SMTP before opening registration to the public. Do not disable
+Enable email/password sign-up and keep email verification enabled. This internal
+team trial does not configure custom SMTP; verify actual email delivery for the
+trial accounts. Public email rollout is outside this trial. Do not disable
 verification to make a smoke test pass. Production acceptance requires the
 new frontend and API deployed with these settings, actual confirmation/recovery
 emails returning to the formal site, and a live two-account isolation check.

@@ -18,8 +18,9 @@ UI design decisions — tokens, typography, motion, states — live in [DESIGN.m
 
 ## Production deployment
 
-The canonical website is **https://cninfo-analyzer-web.pages.dev/**. The existing
-API is **https://rgt07-cninfo-financial-analyzer.hf.space**. See the root
+The canonical website is **https://app.rgt7611lab.dpdns.org/**.
+`https://cninfo-analyzer-web.pages.dev/` remains the Cloudflare platform alias;
+Auth callbacks use the custom domain. The existing API is **https://rgt07-cninfo-financial-analyzer.hf.space**. See the root
 [INTEGRATION.md](../INTEGRATION.md) for the pinned FinAudit runtime and release checks.
 
 Cloudflare Pages uses repository root directory `web`, build command
@@ -47,11 +48,12 @@ preserve the user's Bearer token. Audit additionally sends `X-Finaudit-Token`;
 no server credential belongs in a `VITE_` variable. SSE and downloads use
 Bearer-authenticated fetch, without putting tokens in URLs.
 
-In Supabase Auth URL Configuration, use **https://cninfo-analyzer-web.pages.dev/**
+In Supabase Auth URL Configuration, use **https://app.rgt7611lab.dpdns.org/**
 for both **Site URL** and the sole exact **Redirect URL**. Do not add localhost,
 preview wildcards, or `#/audit` to this production project. Registration and
 recovery emails explicitly return to this root URL. Keep email verification
-enabled and configure production SMTP before opening registration publicly.
+enabled. This internal team trial does not configure custom SMTP; verify actual
+email delivery for trial accounts. Public email rollout is outside this trial.
 
 After return, Supabase consumes the callback fragment before the workbench is
 shown. The app reads view hashes without rewriting them. A `PASSWORD_RECOVERY`

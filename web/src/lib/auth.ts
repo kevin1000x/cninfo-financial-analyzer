@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 export const authRequired = import.meta.env.VITE_AUTH_MODE === "supabase";
 // Email callbacks always return to the deployed root, never the current hash
 // route or a local preview. Supabase owns the callback fragment until consumed.
-export const AUTH_REDIRECT_URL = "https://cninfo-analyzer-web.pages.dev/";
+export const AUTH_REDIRECT_URL = "https://app.rgt7611lab.dpdns.org/";
 const url = import.meta.env.VITE_SUPABASE_URL?.trim();
 const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
 
